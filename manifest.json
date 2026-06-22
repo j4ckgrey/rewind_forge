@@ -6,6 +6,7 @@
   "resources": ["stream"],
   "rewind": {
     "kind": "forge",
+    "bundleUrl": "https://github.com/j4ckgrey/rewind_forge/releases/latest/download/index.mjs",
     "tabs": [{ "id": "forge", "label": "Forge", "icon": "hammer" }],
     "configKeys": [
       "realdebrid_api_key",

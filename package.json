@@ -14,12 +14,15 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build": "esbuild src/plugin.ts --bundle --format=esm --platform=node --target=node22 --outfile=dist/index.mjs --tsconfig=tsconfig.json"
   },
   "dependencies": {
     "@viren070/parse-torrent-title": "^0.7.6"
   },
   "devDependencies": {
+    "esbuild": "^0.28.1",
+    "@types/node": "^25.8.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6"
   }

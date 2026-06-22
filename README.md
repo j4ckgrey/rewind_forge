@@ -65,20 +65,26 @@ the_forge/
 
 The core is pure logic: it imports **nothing** from rewind_server. Everything it
 needs from its environment (DB access + logger) is the `ForgeHost` interface in
-`host.ts`, which the embedder registers once via `setForgeHost()`.
+`host.ts`. `src/plugin.ts` is the bundle entry: it exports `register(host)`,
+which the server calls once after loading the bundle.
 
-## Consuming it
+## How it's consumed (runtime plugin — NOT part of the server build)
 
-- **In-process (current):** rewind_server source-imports this repo via the
-  `@forge` path alias (tsconfig `paths` + Next `experimental.externalDir`) and
-  registers a `ForgeHost` backed by its own SQLite (see
-  `rewind_server/src/lib/forgeHost.ts`). The Docker build context must include
-  this directory (build from the workspace root, or vendor it as a git
-  submodule). For local dev, `the_forge/node_modules` is symlinked to
-  rewind_server's install so the Forge's own deps resolve.
-- **Standalone (Phase 5):** wrap `src/index.ts` in a thin HTTP server that
-  serves `/manifest.json` + the stream protocol, register a `ForgeHost` backed by
-  its own storage, and run it as its own container.
+The Rewind server ships **clean** and runs fine with this addon absent. The
+operator installs The Forge at runtime:
+
+1. `npm run build` bundles `src/plugin.ts` + all deps into a single
+   `dist/index.mjs` (esbuild).
+2. Publish that file (e.g. a GitHub **release asset**); `manifest.json`'s
+   `rewind.bundleUrl` points at it.
+3. In the Rewind dashboard → **Integrations → Addons**, paste this repo's
+   `manifest.json` URL and press **Install**. The server downloads the bundle
+   into its persistent data volume at `data/addons/forge/index.mjs` (so it
+   **survives Docker image updates**), `import()`s it, and calls `register(host)`
+   with its DB + logger. Uninstall deletes the bundle and the install flag.
+
+Because the bundle lives in the data volume and is loaded dynamically, the Forge
+is fully optional and the server image never contains its code.
 
 ## Develop
 
@@ -86,5 +92,5 @@ needs from its environment (DB access + logger) is the `ForgeHost` interface in
 npm install
 npm run typecheck
 npm test
+npm run build      # → dist/index.mjs (publish this as the bundleUrl asset)
 ```
-# rewind_forge
