@@ -1,0 +1,26 @@
+{
+  "id": "rewind.forge",
+  "name": "The Forge",
+  "version": "1.0.0",
+  "description": "Torrent/usenet indexers + debrid resolution for Rewind. Brings the streams pipeline (Torrentio, Zilean, Torznab/Newznab, Comet, EasyNews, TorBox search) and the debrid/usenet resolvers. Installing reveals the Forge tab and the debrid/usenet credentials.",
+  "resources": ["stream"],
+  "rewind": {
+    "kind": "forge",
+    "tabs": [{ "id": "forge", "label": "Forge", "icon": "hammer" }],
+    "configKeys": [
+      "realdebrid_api_key",
+      "alldebrid_api_key",
+      "premiumize_api_key",
+      "torbox_api_key",
+      "debridlink_api_key",
+      "offcloud_api_key",
+      "putio_api_key",
+      "easydebrid_api_key",
+      "nzbdav_host",
+      "nzbdav_api_key",
+      "altmount_host",
+      "altmount_api_key"
+    ],
+    "features": ["torrents", "debrid", "usenet"]
+  }
+}
