@@ -9,18 +9,18 @@
     "bundleUrl": "https://raw.githubusercontent.com/j4ckgrey/rewind_forge/main/dist/index.mjs",
     "tabs": [{ "id": "forge", "label": "Forge", "icon": "hammer" }],
     "configKeys": [
-      "realdebrid_api_key",
-      "alldebrid_api_key",
-      "premiumize_api_key",
-      "torbox_api_key",
-      "debridlink_api_key",
-      "offcloud_api_key",
-      "putio_api_key",
-      "easydebrid_api_key",
-      "nzbdav_host",
-      "nzbdav_api_key",
-      "altmount_host",
-      "altmount_api_key"
+      { "key": "realdebrid_api_key", "label": "Real-Debrid", "category": "Debrid Providers", "description": "API token from real-debrid.com/apitoken." },
+      { "key": "alldebrid_api_key", "label": "AllDebrid", "category": "Debrid Providers", "description": "API key from alldebrid.com/apikeys." },
+      { "key": "premiumize_api_key", "label": "Premiumize", "category": "Debrid Providers", "description": "API key from premiumize.me/account." },
+      { "key": "torbox_api_key", "label": "TorBox", "category": "Debrid Providers", "description": "API key from torbox.app/settings. Also powers the TorBox search indexer." },
+      { "key": "debridlink_api_key", "label": "Debrid-Link", "category": "Debrid Providers", "description": "API token from debrid-link.com/webapp/apikey." },
+      { "key": "offcloud_api_key", "label": "Offcloud", "category": "Debrid Providers", "description": "API key from offcloud.com/account/preferences." },
+      { "key": "putio_api_key", "label": "Put.io", "category": "Debrid Providers", "description": "OAuth token from put.io/oauth." },
+      { "key": "easydebrid_api_key", "label": "EasyDebrid", "category": "Debrid Providers", "description": "API key from easydebrid.com." },
+      { "key": "nzbdav_host", "label": "NZBDav Host URL", "category": "Self-Hosted Usenet", "secret": false, "placeholder": "http://192.168.1.10:8080", "description": "Base URL of your NZBDav instance." },
+      { "key": "nzbdav_api_key", "label": "NZBDav API Key", "category": "Self-Hosted Usenet", "description": "Optional — leave blank if NZBDav requires none." },
+      { "key": "altmount_host", "label": "AltMount Host URL", "category": "Self-Hosted Usenet", "secret": false, "placeholder": "http://192.168.1.10:9000", "description": "Base URL of your AltMount instance." },
+      { "key": "altmount_api_key", "label": "AltMount API Key", "category": "Self-Hosted Usenet", "description": "Optional — leave blank if AltMount requires none." }
     ],
     "features": ["torrents", "debrid", "usenet"]
   }
