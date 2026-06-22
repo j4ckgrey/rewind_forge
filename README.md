@@ -30,7 +30,7 @@ dark. AIOStreams / AIOMetadata are a separate, built-in path and are unaffected.
 1. Host this addon so its `manifest.json` is reachable over HTTP (see
    *Running* below).
 2. In the Rewind dashboard go to **Integrations → Addons**.
-3. Paste the manifest URL, e.g. `https://forge.example.com/manifest.json`, and
+3. Paste the manifest URL, e.g. `https://github.com/j4ckgrey/rewind_forge/blob/main/manifest.json`, and
    press **Install**.
 
 The Forge tab and the debrid/usenet keys appear immediately.
