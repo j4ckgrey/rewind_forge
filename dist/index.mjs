@@ -5496,7 +5496,9 @@ var CometSource = class {
    */
   async buildBaseUrl(cfg) {
     if (cfg.manifestUrl) {
-      return cfg.manifestUrl.replace(/\/manifest\.json$/, "").replace(/\/$/, "");
+      const i = cfg.manifestUrl.indexOf("/manifest.json");
+      const base = i >= 0 ? cfg.manifestUrl.slice(0, i) : cfg.manifestUrl;
+      return base.replace(/\/+$/, "");
     }
     const host2 = (this.row.url || DEFAULT_HOST).replace(/\/$/, "");
     const accounts = await getForgeHost().listStreamAccounts("debrid");
