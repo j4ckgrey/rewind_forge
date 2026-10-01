@@ -4125,7 +4125,7 @@ function parseCandidate(candidate) {
 }
 function parseSizeBytes(text) {
   if (!text) return null;
-  const match = text.match(/(\d+(?:[.,]\d+)?)\s*(b|kb|mb|gb|tb|kib|mib|gib|tib)/i);
+  const match = text.match(/(\d+(?:[.,]\d+)?)\s*(b|kb|mb|gb|tb|kib|mib|gib|tib)\b/i);
   if (!match) return null;
   const value = parseFloat(match[1].replace(",", "."));
   if (Number.isNaN(value)) return null;
@@ -5436,6 +5436,7 @@ function pinReleaseGroup(streams, preferredGroup, opts) {
 // src/sources/comet.ts
 init_host();
 init_base();
+init_parser2();
 var DEFAULT_HOST = "https://comet.elfhosted.com";
 var COMET_SERVICE_BY_PROVIDER = {
   realdebrid: "realdebrid",
@@ -5563,6 +5564,11 @@ function buildCandidate(row, s) {
   const extractedHash = directHash ?? extractInfoHashFromCometPlaybackUrl(s.url);
   const dropProxyUrl = !!extractedHash && !directHash;
   const localKey = extractedHash ? `${extractedHash}:${s.fileIdx ?? 0}` : s.url ?? "";
+  const text = `${s.title ?? ""}
+${s.description ?? ""}`;
+  const hinted = s.behaviorHints?.videoSize;
+  const sizeBytes = typeof hinted === "number" && hinted > 0 ? hinted : parseSizeBytes(text);
+  const seeders = parseSeeders(text);
   return {
     id: candidateId(row.id, localKey),
     sourceType: "comet",
@@ -5572,6 +5578,8 @@ function buildCandidate(row, s) {
     rawTitle,
     url: dropProxyUrl ? void 0 : s.url ?? void 0,
     infoHash: extractedHash ?? void 0,
+    sizeBytes: sizeBytes ?? void 0,
+    seeders: seeders ?? void 0,
     bingeGroup: s.behaviorHints?.bingeGroup,
     meta: { fileIdx: s.fileIdx, trackers: s.sources }
   };
