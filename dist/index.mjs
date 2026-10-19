@@ -8415,7 +8415,8 @@ var manifest_default = {
     content: [
       "movies",
       "series",
-      "anime"
+      "anime",
+      "books"
     ]
   },
   rewind: {
