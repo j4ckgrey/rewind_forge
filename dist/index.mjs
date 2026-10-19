@@ -7303,12 +7303,24 @@ var BOOK_CATS = {
   audiobook: [3030],
   any: [7020, 7030, 3030]
 };
-async function searchBookReleases(rows, query, kind, signal) {
+async function searchBookReleases(rows, query, kind, signal, book) {
   const usenet = rows.filter((r) => r.enabled === 1 && r.url && (r.source_type === "newznab" || r.source_type === "nzbhydra"));
   const perIndexer = await Promise.all(usenet.map(async (row) => {
-    const params = new URLSearchParams({ t: "search", q: query, cat: BOOK_CATS[kind].join(","), limit: "100", extended: "1" });
-    if (row.api_key) params.set("apikey", row.api_key);
-    const xml = await fetchText(`${row.url.replace(/\/$/, "")}/api?${params}`, { signal });
+    const api = (params) => {
+      params.set("cat", BOOK_CATS[kind].join(","));
+      params.set("limit", "100");
+      params.set("extended", "1");
+      if (row.api_key) params.set("apikey", row.api_key);
+      return fetchText(`${row.url.replace(/\/$/, "")}/api?${params}`, { signal });
+    };
+    if (book?.title) {
+      const p = new URLSearchParams({ t: "book", title: book.title });
+      if (book.author) p.set("author", book.author);
+      const xml2 = await api(p);
+      const found = xml2 && !/<error\b/i.test(xml2) ? parseBookItems(xml2, row) : [];
+      if (found.length) return found;
+    }
+    const xml = await api(new URLSearchParams({ t: "search", q: query }));
     return xml ? parseBookItems(xml, row) : [];
   }));
   const seen = /* @__PURE__ */ new Set();
@@ -8410,7 +8422,7 @@ init_host();
 var manifest_default = {
   id: "rewind.forge",
   name: "The Forge",
-  version: "2.0.0",
+  version: "2.0.1",
   description: "Torrent/usenet indexers + debrid resolution for Rewind. Brings the streams pipeline (Torrentio, Zilean, Torznab/Newznab, Comet, EasyNews, TorBox search) and the debrid/usenet resolvers, plus a built-in usenet streaming engine (your provider + indexer, no NZBDav needed). Installing reveals the Forge tab and the debrid/usenet credentials.",
   resources: [
     "stream",
@@ -8612,7 +8624,8 @@ function buildApi() {
     /** Books space: search the usenet indexers' book categories. */
     async searchBooks(opts) {
       const rows = await getForgeHost().listStreamSources();
-      const found = await searchBookReleases(rows, opts.query, opts.kind ?? "any", AbortSignal.timeout(2e4));
+      const book = opts.title ? { title: opts.title, author: opts.author } : void 0;
+      const found = await searchBookReleases(rows, opts.query, opts.kind ?? "any", AbortSignal.timeout(2e4), book);
       const svc = await getUsenetEngine();
       if (!svc) return found;
       const out = [];
