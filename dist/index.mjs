@@ -4358,7 +4358,7 @@ var init_base2 = __esm({
 });
 
 // ../rewind_addon_sdk/src/manifest.ts
-var SDK_PROTOCOL_VERSION = 1;
+var SDK_PROTOCOL_VERSION = 2;
 
 // ../rewind_addon_sdk/src/addon.ts
 function defineAddon(def) {
@@ -4377,7 +4377,7 @@ init_host();
 // src/pipeline.ts
 init_host();
 init_log();
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 
 // src/filter.ts
 function applyFilters(streams, prefs) {
@@ -5106,9 +5106,9 @@ var RealDebridResolver = class {
     const BATCH = 40;
     for (let i = 0; i < torrents.length; i += BATCH) {
       const slice = torrents.slice(i, i + BATCH);
-      const path = slice.map((c) => c.infoHash).join("/");
+      const path3 = slice.map((c) => c.infoHash).join("/");
       const data = await fetchAuthed(
-        `${RD_HOST}/torrents/instantAvailability/${path}`,
+        `${RD_HOST}/torrents/instantAvailability/${path3}`,
         this.apiKey,
         { signal, label: "Real-Debrid" }
       );
@@ -5302,6 +5302,1188 @@ async function pollForReady(fn) {
   return last;
 }
 
+// src/resolvers/usenet.ts
+init_log();
+
+// src/usenet/service.ts
+init_host();
+init_log();
+import os from "node:os";
+import path2 from "node:path";
+
+// src/usenet/engine.ts
+init_log();
+init_base2();
+init_base();
+import { createHash as createHash2 } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+
+// src/usenet/files.ts
+var NzbFileReader = class {
+  constructor(file, store, readAhead = 8) {
+    this.file = file;
+    this.store = store;
+    this.readAhead = readAhead;
+    this.size = 0;
+    this.partSize = 0;
+  }
+  /** Learn size + part size from the first article (or a saved layout). */
+  async open(layout) {
+    if (layout) {
+      this.size = layout.size;
+      this.partSize = layout.partSize;
+      return this;
+    }
+    const first = await this.store.get(this.file.segments[0].messageId);
+    this.size = first.fileSize;
+    this.partSize = first.data.length || 1;
+    return this;
+  }
+  get layout() {
+    return { size: this.size, partSize: this.partSize };
+  }
+  /** First decoded bytes (for magic sniffing / archive headers). */
+  async head() {
+    return (await this.store.get(this.file.segments[0].messageId)).data;
+  }
+  async read(offset, length) {
+    const out = [];
+    for await (const chunk of this.stream(offset, Math.min(this.size, offset + length) - 1)) out.push(chunk);
+    return Buffer.concat(out);
+  }
+  async *stream(start, endInclusive, signal) {
+    if (start > endInclusive) return;
+    let { index, part } = await this.locate(start);
+    let pos = start;
+    const segs = this.file.segments;
+    const ahead = /* @__PURE__ */ new Set();
+    const prefetch = (from) => {
+      for (let i = from; i < Math.min(segs.length, from + this.readAhead); i++) {
+        if (ahead.has(i)) continue;
+        ahead.add(i);
+        this.store.get(segs[i].messageId).catch(() => {
+        });
+      }
+    };
+    for (; ; ) {
+      if (signal?.aborted) return;
+      prefetch(index + 1);
+      const from = pos - part.begin;
+      const to = Math.min(part.data.length, endInclusive - part.begin + 1);
+      if (to > from) {
+        yield part.data.subarray(from, to);
+        pos = part.begin + to;
+      }
+      if (pos > endInclusive) return;
+      index++;
+      if (index >= segs.length) throw new Error(`file ends at ${pos}, wanted ${endInclusive + 1}`);
+      part = await this.store.get(segs[index].messageId);
+      if (part.begin !== pos) {
+        ({ index, part } = await this.locate(pos));
+      }
+    }
+  }
+  async locate(offset) {
+    const segs = this.file.segments;
+    let index = Math.min(segs.length - 1, Math.floor(offset / this.partSize));
+    for (let steps = 0; steps < 64; steps++) {
+      const part = await this.store.get(segs[index].messageId);
+      if (offset < part.begin && index > 0) index--;
+      else if (offset >= part.begin + part.data.length && index < segs.length - 1) index++;
+      else return { index, part };
+    }
+    throw new Error(`could not locate offset ${offset} in ${this.file.name}`);
+  }
+};
+var SpanFile = class {
+  constructor(spans) {
+    this.spans = spans;
+    this.size = spans.reduce((n, s) => n + s.length, 0);
+  }
+  async read(offset, length) {
+    const out = [];
+    for await (const chunk of this.stream(offset, Math.min(this.size, offset + length) - 1)) out.push(chunk);
+    return Buffer.concat(out);
+  }
+  async *stream(start, endInclusive, signal) {
+    let base = 0;
+    for (const span of this.spans) {
+      const spanEnd = base + span.length - 1;
+      if (spanEnd >= start && base <= endInclusive) {
+        const from = Math.max(start, base) - base;
+        const to = Math.min(endInclusive, spanEnd) - base;
+        yield* span.file.stream(span.offset + from, span.offset + to, signal);
+        if (signal?.aborted) return;
+      }
+      base += span.length;
+      if (base > endInclusive) return;
+    }
+  }
+};
+
+// src/usenet/rar.ts
+var RAR4_SIG = Buffer.from([82, 97, 114, 33, 26, 7, 0]);
+var RAR5_SIG = Buffer.from([82, 97, 114, 33, 26, 7, 1, 0]);
+var RarError = class extends Error {
+};
+function rarVersion(head) {
+  if (head.subarray(0, 8).equals(RAR5_SIG)) return 5;
+  if (head.subarray(0, 7).equals(RAR4_SIG)) return 4;
+  return null;
+}
+async function readRarSet(volumes) {
+  const entries = /* @__PURE__ */ new Map();
+  for (const vol of volumes) {
+    const head = await vol.read(0, Math.min(vol.size, 64 * 1024));
+    const version = rarVersion(head);
+    if (!version) throw new RarError("volume is not a RAR archive");
+    const blocks = version === 5 ? await readRar5(vol, head) : await readRar4(vol, head);
+    for (const b of blocks) {
+      let e = entries.get(b.name);
+      if (!e) {
+        e = { name: b.name, size: b.unpSize, spans: [], stored: b.stored, encrypted: b.encrypted };
+        entries.set(b.name, e);
+      }
+      e.stored &&= b.stored;
+      e.encrypted ||= b.encrypted;
+      if (b.dataSize > 0) e.spans.push({ file: vol, offset: b.dataStart, length: b.dataSize });
+    }
+  }
+  return [...entries.values()];
+}
+var R4_MAIN = 115;
+var R4_FILE = 116;
+var R4_END = 123;
+var R4_LONG_BLOCK = 32768;
+async function readRar4(vol, head) {
+  const out = [];
+  const reader = new WindowReader(vol, head);
+  let pos = RAR4_SIG.length;
+  while (pos + 7 <= vol.size) {
+    const fixed = await reader.at(pos, 7);
+    const type = fixed[2];
+    const flags = fixed.readUInt16LE(3);
+    const headSize = fixed.readUInt16LE(5);
+    if (headSize < 7) throw new RarError("corrupt RAR4 block header");
+    const h = await reader.at(pos, headSize);
+    if (type === R4_MAIN && flags & 128) {
+      throw new RarError("RAR headers are encrypted (password protected release)");
+    }
+    if (type === R4_END) break;
+    let addSize = flags & R4_LONG_BLOCK ? h.readUInt32LE(7) : 0;
+    if (type === R4_FILE) {
+      let packSize = h.readUInt32LE(7);
+      let unpSize = h.readUInt32LE(11);
+      const method = h[25];
+      const nameSize = h.readUInt16LE(26);
+      let nameAt = 32;
+      if (flags & 256) {
+        packSize += h.readUInt32LE(32) * 2 ** 32;
+        unpSize += h.readUInt32LE(36) * 2 ** 32;
+        nameAt += 8;
+      }
+      addSize = packSize;
+      out.push({
+        name: decodeRar4Name(h.subarray(nameAt, nameAt + nameSize)),
+        unpSize,
+        dataStart: pos + headSize,
+        dataSize: packSize,
+        stored: method === 48,
+        encrypted: !!(flags & 4),
+        splitAfter: !!(flags & 2)
+      });
+      if (flags & 2) break;
+    }
+    pos += headSize + addSize;
+  }
+  return out;
+}
+function decodeRar4Name(raw) {
+  const nul = raw.indexOf(0);
+  const ascii = raw.subarray(0, nul >= 0 ? nul : raw.length);
+  return ascii.toString("utf8").replace(/\\/g, "/").split("/").pop();
+}
+var R5_FILE = 2;
+var R5_ENCRYPTION = 4;
+var R5_END = 5;
+async function readRar5(vol, head) {
+  const out = [];
+  const reader = new WindowReader(vol, head);
+  let pos = RAR5_SIG.length;
+  while (pos + 7 <= vol.size) {
+    const sizeField = new VintReader(await reader.at(pos + 4, 10), 0);
+    const headSize = sizeField.vint();
+    const headerStart = pos + 4 + sizeField.pos;
+    const r = new VintReader(await reader.at(headerStart, headSize), 0);
+    const type = r.vint();
+    const flags = r.vint();
+    const extraSize = flags & 1 ? r.vint() : 0;
+    const dataSize = flags & 2 ? r.vint() : 0;
+    const blockEnd = headerStart + headSize;
+    if (type === R5_ENCRYPTION) throw new RarError("RAR headers are encrypted (password protected release)");
+    if (type === R5_END) break;
+    if (type === R5_FILE) {
+      const fileFlags = r.vint();
+      const unpSize = r.vint();
+      r.vint();
+      if (fileFlags & 2) r.skip(4);
+      if (fileFlags & 4) r.skip(4);
+      const compInfo = r.vint();
+      r.vint();
+      const nameLen = r.vint();
+      const name = r.bytes(nameLen).toString("utf8").split("/").pop();
+      const extra = extraSize ? r.bytes(extraSize) : Buffer.alloc(0);
+      const splitAfter = !!(flags & 16);
+      out.push({
+        name,
+        unpSize,
+        dataStart: blockEnd,
+        dataSize,
+        stored: (compInfo >> 7 & 7) === 0,
+        encrypted: hasRar5EncryptionRecord(extra),
+        splitAfter
+      });
+      if (splitAfter) break;
+    }
+    pos = blockEnd + dataSize;
+  }
+  return out;
+}
+function hasRar5EncryptionRecord(extra) {
+  const r = new VintReader(extra, 0);
+  while (r.pos < extra.length) {
+    const size = r.vint();
+    const start = r.pos;
+    if (r.vint() === 1) return true;
+    r.pos = start + size;
+  }
+  return false;
+}
+var WindowReader = class {
+  constructor(vol, buf) {
+    this.vol = vol;
+    this.buf = buf;
+    this.bufAt = 0;
+  }
+  async at(offset, length) {
+    const len = Math.min(length, this.vol.size - offset);
+    if (offset < this.bufAt || offset + len > this.bufAt + this.buf.length) {
+      this.buf = await this.vol.read(offset, Math.min(this.vol.size - offset, Math.max(len, 64 * 1024)));
+      this.bufAt = offset;
+    }
+    return this.buf.subarray(offset - this.bufAt, offset - this.bufAt + len);
+  }
+};
+var VintReader = class {
+  constructor(buf, pos) {
+    this.buf = buf;
+    this.pos = pos;
+  }
+  vint() {
+    let v = 0;
+    let mul = 1;
+    for (let i = 0; i < 10; i++) {
+      const b = this.buf[this.pos++];
+      if (b === void 0) throw new RarError("truncated RAR5 header");
+      v += (b & 127) * mul;
+      if (!(b & 128)) return v;
+      mul *= 128;
+    }
+    throw new RarError("bad RAR5 vint");
+  }
+  skip(n) {
+    this.pos += n;
+  }
+  bytes(n) {
+    const b = this.buf.subarray(this.pos, this.pos + n);
+    this.pos += n;
+    return b;
+  }
+};
+
+// src/usenet/media.ts
+var JUNK_EXT = /\.(par2|nfo|sfv|srr|nzb|txt|jpe?g|png|gif|url|exe|sample\.\w+)$/i;
+var VIDEO_EXT3 = /\.(mkv|mp4|m4v|avi|ts|m2ts|mov|webm|wmv|mpg|mpeg)$/i;
+async function scanNzb(files, store, concurrency) {
+  const problems = [];
+  const wanted = files.map((file, index) => ({ file, index })).filter(({ file }) => !JUNK_EXT.test(file.name) && !/\.vol\d+\+\d+/i.test(file.name));
+  const opened = await mapLimit(wanted, concurrency, async ({ file, index }) => {
+    const reader = await new NzbFileReader(file, store).open();
+    return { index, file, reader, head: await reader.head() };
+  });
+  const layouts = {};
+  for (const o of opened) layouts[o.index] = o.reader.layout;
+  const entries = [];
+  const rarGroups = /* @__PURE__ */ new Map();
+  const splitGroups = /* @__PURE__ */ new Map();
+  for (const o of opened) {
+    const name = o.file.name;
+    if (rarVersion(o.head)) {
+      push(rarGroups, rarStem(name), o);
+    } else if (/\.\d{3}$/.test(name)) {
+      push(splitGroups, name.replace(/\.\d{3}$/, ""), o);
+    } else if (looksLikeVideo(o.head) || VIDEO_EXT3.test(name)) {
+      entries.push({
+        name: VIDEO_EXT3.test(name) ? name : `${name}.${sniffExt(o.head)}`,
+        size: o.reader.size,
+        spans: [{ nzbIndex: o.index, offset: 0, length: o.reader.size }]
+      });
+    }
+  }
+  for (const [stem, group] of splitGroups) {
+    group.sort((a, b) => splitNumber(a.file.name) - splitNumber(b.file.name));
+    entries.push({
+      name: VIDEO_EXT3.test(stem) ? stem : `${stem}.${sniffExt(group[0].head)}`,
+      size: group.reduce((n, o) => n + o.reader.size, 0),
+      spans: group.map((o) => ({ nzbIndex: o.index, offset: 0, length: o.reader.size }))
+    });
+  }
+  for (const group of rarGroups.values()) {
+    group.sort(compareRarVolumes);
+    const readerIndex = new Map(group.map((o) => [o.reader, o.index]));
+    let rarEntries;
+    try {
+      rarEntries = await readRarSet(group.map((o) => o.reader));
+    } catch (err) {
+      if (err instanceof RarError) {
+        problems.push(err.message);
+        continue;
+      }
+      throw err;
+    }
+    for (const e of rarEntries) {
+      if (!VIDEO_EXT3.test(e.name)) continue;
+      if (e.encrypted) {
+        problems.push(`${e.name} is password protected`);
+        continue;
+      }
+      if (!e.stored) {
+        problems.push(`${e.name} is compressed inside the RAR (can't stream)`);
+        continue;
+      }
+      const spanBytes = e.spans.reduce((n, s) => n + s.length, 0);
+      if (spanBytes !== e.size) {
+        problems.push(`${e.name}: RAR volumes cover ${spanBytes} of ${e.size} bytes (volumes missing)`);
+        continue;
+      }
+      entries.push({
+        name: e.name,
+        size: e.size,
+        spans: e.spans.map((s) => ({ nzbIndex: readerIndex.get(s.file), offset: s.offset, length: s.length }))
+      });
+    }
+  }
+  return { entries, layouts, problems };
+}
+function openEntry(entry, readers) {
+  const spans = entry.spans.map((s) => ({ file: readers.get(s.nzbIndex), offset: s.offset, length: s.length }));
+  return spans.length === 1 && spans[0].offset === 0 && spans[0].length === spans[0].file.size ? spans[0].file : new SpanFile(spans);
+}
+function looksLikeVideo(head) {
+  return sniffExt(head) !== "bin";
+}
+function sniffExt(head) {
+  if (head.length >= 4 && head.readUInt32BE(0) === 440786851) return "mkv";
+  if (head.length >= 8 && head.toString("latin1", 4, 8) === "ftyp") return "mp4";
+  if (head.length >= 12 && head.toString("latin1", 0, 4) === "RIFF" && head.toString("latin1", 8, 11) === "AVI") return "avi";
+  if (head.length >= 377 && head[0] === 71 && head[188] === 71 && head[376] === 71) return "ts";
+  return "bin";
+}
+function rarStem(name) {
+  if (/\.(part\d+\.rar|rar|r\d{2,3})$/i.test(name)) {
+    return name.replace(/\.part\d+\.rar$/i, "").replace(/\.(rar|r\d{2,3})$/i, "").toLowerCase();
+  }
+  return "\0obfuscated";
+}
+function rarVolumeNumber(name) {
+  const part = /\.part(\d+)\.rar$/i.exec(name);
+  if (part) return Number(part[1]);
+  if (/\.rar$/i.test(name)) return 0;
+  const old = /\.r(\d{2,3})$/i.exec(name);
+  if (old) return Number(old[1]) + 1;
+  return null;
+}
+function compareRarVolumes(a, b) {
+  const na = rarVolumeNumber(a.file.name);
+  const nb = rarVolumeNumber(b.file.name);
+  if (na != null && nb != null) return na - nb;
+  return (a.file.subjectIndex ?? a.index) - (b.file.subjectIndex ?? b.index);
+}
+function splitNumber(name) {
+  return Number(/\.(\d{3})$/.exec(name)?.[1] ?? 0);
+}
+function push(m, k, v) {
+  const arr = m.get(k);
+  if (arr) arr.push(v);
+  else m.set(k, [v]);
+}
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+// src/usenet/nntp.ts
+import net from "node:net";
+import tls from "node:tls";
+var ArticleMissingError = class extends Error {
+  constructor(messageId) {
+    super(`article <${messageId}> not found on the provider`);
+    this.messageId = messageId;
+  }
+};
+var NntpError = class extends Error {
+  constructor(message, code) {
+    super(message);
+    this.code = code;
+  }
+};
+var DEFAULT_TIMEOUT_MS = 2e4;
+var TERMINATOR = Buffer.from("\r\n.\r\n");
+var NntpConnection = class {
+  constructor(cfg) {
+    this.cfg = cfg;
+    this.socket = null;
+    this.buf = Buffer.alloc(0);
+    this.pending = null;
+    this.statusLine = null;
+    this.scanFrom = 0;
+    this.closed = false;
+  }
+  async connect() {
+    const { host: host2, port, ssl } = this.cfg;
+    const socket = ssl ? tls.connect({ host: host2, port, servername: net.isIP(host2) ? void 0 : host2 }) : net.connect({ host: host2, port });
+    this.socket = socket;
+    socket.setNoDelay(true);
+    socket.on("data", (d) => this.onData(d));
+    socket.on("error", (e) => this.fail(new NntpError(`${host2}:${port} ${e.message}`)));
+    socket.on("close", () => this.fail(new NntpError(`${host2}:${port} connection closed`)));
+    const greeting = await this.read(false);
+    if (greeting.code !== 200 && greeting.code !== 201) {
+      throw new NntpError(`unexpected greeting: ${greeting.line}`, greeting.code);
+    }
+    if (this.cfg.username) {
+      const user = await this.command(`AUTHINFO USER ${this.cfg.username}`);
+      if (user.code === 381) {
+        const pass = await this.command(`AUTHINFO PASS ${this.cfg.password}`);
+        if (pass.code !== 281) throw new NntpError(`login rejected: ${pass.line}`, pass.code);
+      } else if (user.code !== 281) {
+        throw new NntpError(`login rejected: ${user.line}`, user.code);
+      }
+    }
+  }
+  /** Fetch an article body, dot-unstuffed. */
+  async body(messageId) {
+    const r = await this.command(`BODY <${messageId}>`, true);
+    if (r.code === 430) throw new ArticleMissingError(messageId);
+    if (r.code !== 222 || !r.body) throw new NntpError(`BODY failed: ${r.line}`, r.code);
+    return r.body;
+  }
+  /** True when the article exists on the provider. */
+  async stat(messageId) {
+    const r = await this.command(`STAT <${messageId}>`);
+    if (r.code === 223) return true;
+    if (r.code === 430) return false;
+    throw new NntpError(`STAT failed: ${r.line}`, r.code);
+  }
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    try {
+      this.socket?.end("QUIT\r\n");
+    } catch {
+    }
+    this.socket?.destroy();
+  }
+  async command(line, multiline = false) {
+    if (this.closed || !this.socket) throw new NntpError("connection closed");
+    const p = this.read(multiline);
+    this.socket.write(`${line}\r
+`);
+    return p;
+  }
+  read(multiline) {
+    if (this.pending) return Promise.reject(new NntpError("command already in flight"));
+    return new Promise((resolve, reject) => {
+      const timeout = this.cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      const timer = setTimeout(() => {
+        this.fail(new NntpError(`timed out after ${timeout} ms`));
+        this.close();
+      }, timeout);
+      this.pending = {
+        multiline,
+        resolve: (r) => {
+          clearTimeout(timer);
+          resolve(r);
+        },
+        reject: (e) => {
+          clearTimeout(timer);
+          reject(e);
+        }
+      };
+      this.drain();
+    });
+  }
+  onData(d) {
+    this.buf = this.buf.length ? Buffer.concat([this.buf, d]) : d;
+    this.drain();
+  }
+  drain() {
+    const p = this.pending;
+    if (!p) return;
+    if (!this.statusLine) {
+      const eol = this.buf.indexOf("\r\n");
+      if (eol < 0) return;
+      const line = this.buf.toString("latin1", 0, eol);
+      this.buf = this.buf.subarray(eol + 2);
+      this.statusLine = { code: Number(line.slice(0, 3)), line };
+      this.scanFrom = 0;
+      if (!p.multiline || this.statusLine.code >= 300) return this.finish(void 0);
+    }
+    if (this.buf.length >= 3 && this.buf[0] === 46 && this.buf[1] === 13 && this.buf[2] === 10) {
+      this.buf = this.buf.subarray(3);
+      return this.finish(Buffer.alloc(0));
+    }
+    const end = this.buf.indexOf(TERMINATOR, Math.max(0, this.scanFrom - 4));
+    if (end < 0) {
+      this.scanFrom = this.buf.length;
+      return;
+    }
+    const raw = this.buf.subarray(0, end + 2);
+    this.buf = this.buf.subarray(end + TERMINATOR.length);
+    this.finish(dotUnstuff(raw));
+  }
+  finish(body) {
+    const p = this.pending;
+    const status = this.statusLine;
+    this.pending = null;
+    this.statusLine = null;
+    p.resolve({ ...status, body });
+  }
+  fail(err) {
+    this.closed = true;
+    const p = this.pending;
+    this.pending = null;
+    p?.reject(err);
+  }
+};
+function dotUnstuff(raw) {
+  if (raw.indexOf("\n..") < 0 && !(raw[0] === 46 && raw[1] === 46)) return raw;
+  const out = Buffer.allocUnsafe(raw.length);
+  let o = 0;
+  let lineStart = true;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (lineStart && c === 46 && raw[i + 1] === 46) {
+      lineStart = false;
+      continue;
+    }
+    out[o++] = c;
+    lineStart = c === 10;
+  }
+  return out.subarray(0, o);
+}
+var NntpPool = class {
+  constructor(cfg, idleMs = 6e4) {
+    this.cfg = cfg;
+    this.idleMs = idleMs;
+    this.idle = [];
+    this.open = 0;
+    this.waiters = [];
+    this.idleTimers = /* @__PURE__ */ new Map();
+    this.destroyed = false;
+  }
+  async run(fn, signal) {
+    for (let attempt = 0; ; attempt++) {
+      const conn = await this.acquire(signal);
+      try {
+        const out = await fn(conn);
+        this.release(conn);
+        return out;
+      } catch (err) {
+        if (err instanceof ArticleMissingError) {
+          this.release(conn);
+          throw err;
+        }
+        this.discard(conn);
+        if (attempt >= 1 || this.destroyed) throw err;
+      }
+    }
+  }
+  destroy() {
+    this.destroyed = true;
+    for (const c of this.idle) c.close();
+    this.idle = [];
+    for (const t of this.idleTimers.values()) clearTimeout(t);
+    this.idleTimers.clear();
+    for (const w of this.waiters.splice(0)) w(null);
+  }
+  get stats() {
+    return { open: this.open, idle: this.idle.length, waiting: this.waiters.length };
+  }
+  async acquire(signal) {
+    if (this.destroyed) throw new NntpError("pool destroyed");
+    while (this.idle.length) {
+      const c2 = this.idle.pop();
+      clearTimeout(this.idleTimers.get(c2));
+      this.idleTimers.delete(c2);
+      if (!c2.closed) return c2;
+      this.open--;
+    }
+    if (this.open < Math.max(1, this.cfg.connections)) {
+      this.open++;
+      const c2 = new NntpConnection(this.cfg);
+      try {
+        await c2.connect();
+        return c2;
+      } catch (err) {
+        this.open--;
+        c2.close();
+        this.wakeOne();
+        throw err;
+      }
+    }
+    const c = await new Promise((resolve, reject) => {
+      const onAbort = () => {
+        this.waiters = this.waiters.filter((w) => w !== waiter);
+        reject(new NntpError("aborted"));
+      };
+      const waiter = (conn) => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve(conn);
+      };
+      if (signal?.aborted) return onAbort();
+      signal?.addEventListener("abort", onAbort, { once: true });
+      this.waiters.push(waiter);
+    });
+    if (!c) return this.acquire(signal);
+    return c;
+  }
+  release(c) {
+    if (c.closed || this.destroyed) return this.discard(c);
+    const w = this.waiters.shift();
+    if (w) return w(c);
+    this.idle.push(c);
+    this.idleTimers.set(c, setTimeout(() => {
+      this.idle = this.idle.filter((x) => x !== c);
+      this.idleTimers.delete(c);
+      this.open--;
+      c.close();
+    }, this.idleMs));
+  }
+  discard(c) {
+    c.close();
+    this.open--;
+    this.wakeOne();
+  }
+  /** A slot freed up — let one waiter open a new connection. */
+  wakeOne() {
+    const w = this.waiters.shift();
+    if (w) w(null);
+  }
+};
+
+// src/usenet/nzb.ts
+function parseNzb(xml) {
+  const files = [];
+  const fileRe = /<file\b([^>]*)>([\s\S]*?)<\/file>/gi;
+  let m;
+  while ((m = fileRe.exec(xml)) !== null) {
+    const subject = decodeEntities(/\bsubject="([^"]*)"/i.exec(m[1])?.[1] ?? "");
+    const inner = m[2];
+    const groups = [...inner.matchAll(/<group>([\s\S]*?)<\/group>/gi)].map((g) => g[1].trim());
+    const segments = [];
+    for (const s of inner.matchAll(/<segment\b([^>]*)>([\s\S]*?)<\/segment>/gi)) {
+      const attrs = s[1];
+      const number = Number(/\bnumber="(\d+)"/i.exec(attrs)?.[1] ?? 0);
+      const bytes = Number(/\bbytes="(\d+)"/i.exec(attrs)?.[1] ?? 0);
+      const messageId = decodeEntities(s[2].trim()).replace(/^<|>$/g, "");
+      if (messageId) segments.push({ number, bytes, messageId });
+    }
+    if (!segments.length) continue;
+    segments.sort((a, b) => a.number - b.number);
+    files.push({
+      subject,
+      name: nameFromSubject(subject),
+      subjectIndex: indexFromSubject(subject),
+      groups,
+      segments: dedupeSegments(segments)
+    });
+  }
+  return files;
+}
+function dedupeSegments(segs) {
+  const out = [];
+  let last = -1;
+  for (const s of segs) {
+    if (s.number === last) continue;
+    out.push(s);
+    last = s.number;
+  }
+  return out;
+}
+function nameFromSubject(subject) {
+  const quoted = /"([^"]+)"/.exec(subject)?.[1];
+  if (quoted) return quoted.trim();
+  const bare = /([^\s"]+\.[a-z0-9]{2,4})(?=\s|$)/i.exec(subject.replace(/\byEnc\b.*$/i, ""))?.[1];
+  return (bare ?? subject).trim();
+}
+function indexFromSubject(subject) {
+  const m = /[[(](\d+)\s*\/\s*\d+[\])]/.exec(subject);
+  return m ? Number(m[1]) : null;
+}
+function decodeEntities(s) {
+  return s.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n))).replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16))).replace(/&amp;/g, "&");
+}
+
+// src/usenet/yenc.ts
+var CR = 13;
+var LF = 10;
+var EQ = 61;
+var YencError = class extends Error {
+};
+function decodeYenc(body) {
+  const beginAt = body.indexOf("=ybegin ");
+  if (beginAt < 0) throw new YencError("article is not yEnc (no =ybegin)");
+  const beginEol = lineEnd(body, beginAt);
+  const header = body.toString("latin1", beginAt, beginEol);
+  const fileSize = numAttr(header, "size");
+  const name = /\bname=(.*)$/.exec(header)?.[1]?.trim() ?? "";
+  if (fileSize == null) throw new YencError("=ybegin without size");
+  let pos = skipEol(body, beginEol);
+  let begin = 0;
+  let partEnd = null;
+  if (body.toString("latin1", pos, pos + 7) === "=ypart ") {
+    const partEol = lineEnd(body, pos);
+    const partLine = body.toString("latin1", pos, partEol);
+    begin = (numAttr(partLine, "begin") ?? 1) - 1;
+    const end = numAttr(partLine, "end");
+    partEnd = end ?? null;
+    pos = skipEol(body, partEol);
+  }
+  let dataEnd = body.indexOf("\r\n=yend", pos - 2);
+  if (dataEnd < 0) dataEnd = body.indexOf("\n=yend", pos - 1);
+  if (dataEnd < 0) dataEnd = body.length;
+  const expected = partEnd != null ? partEnd - begin : dataEnd - pos;
+  const out = Buffer.allocUnsafe(Math.max(expected, 0) + 64);
+  let o = 0;
+  for (let i = pos; i < dataEnd; i++) {
+    let c = body[i];
+    if (c === CR || c === LF) continue;
+    if (c === EQ) {
+      i++;
+      if (i >= dataEnd) break;
+      c = body[i] - 64 & 255;
+    }
+    if (o >= out.length) throw new YencError("decoded data overflows =ypart range");
+    out[o++] = c - 42 & 255;
+  }
+  if (partEnd != null && o !== partEnd - begin) {
+    throw new YencError(`part decoded to ${o} bytes, =ypart says ${partEnd - begin}`);
+  }
+  return { data: out.subarray(0, o), begin, fileSize, name };
+}
+function numAttr(line, key) {
+  const m = new RegExp(`\\b${key}=(\\d+)`).exec(line);
+  return m ? Number(m[1]) : void 0;
+}
+function lineEnd(buf, from) {
+  const i = buf.indexOf(LF, from);
+  if (i < 0) return buf.length;
+  return i > from && buf[i - 1] === CR ? i - 1 : i;
+}
+function skipEol(buf, eol) {
+  let p = eol;
+  if (buf[p] === CR) p++;
+  if (buf[p] === LF) p++;
+  return p;
+}
+
+// src/usenet/segments.ts
+var SegmentStore = class {
+  constructor(pool, maxCacheBytes = 256 * 1024 * 1024) {
+    this.pool = pool;
+    this.maxCacheBytes = maxCacheBytes;
+    this.cache = /* @__PURE__ */ new Map();
+    this.cachedBytes = 0;
+    this.inflight = /* @__PURE__ */ new Map();
+  }
+  get(messageId) {
+    const hit = this.cache.get(messageId);
+    if (hit) {
+      this.cache.delete(messageId);
+      this.cache.set(messageId, hit);
+      return Promise.resolve(hit);
+    }
+    const running = this.inflight.get(messageId);
+    if (running) return running;
+    const p = this.pool.run((c) => c.body(messageId)).then((body) => {
+      const part = decodeYenc(body);
+      this.put(messageId, part);
+      return part;
+    }).finally(() => this.inflight.delete(messageId));
+    this.inflight.set(messageId, p);
+    return p;
+  }
+  /** Is the article still on the provider? (cheap: no body transfer) */
+  exists(messageId) {
+    if (this.cache.has(messageId)) return Promise.resolve(true);
+    return this.pool.run((c) => c.stat(messageId));
+  }
+  put(id, part) {
+    this.cache.set(id, part);
+    this.cachedBytes += part.data.length;
+    while (this.cachedBytes > this.maxCacheBytes && this.cache.size > 1) {
+      const [oldId, old] = this.cache.entries().next().value;
+      this.cache.delete(oldId);
+      this.cachedBytes -= old.data.length;
+    }
+  }
+};
+
+// src/usenet/engine.ts
+var HEALTH_SAMPLE = 24;
+var UsenetEngine = class {
+  constructor(cfg, dir) {
+    this.cfg = cfg;
+    this.dir = dir;
+    this.jobs = /* @__PURE__ */ new Map();
+    this.preparing = /* @__PURE__ */ new Map();
+    this.pool = new NntpPool(cfg);
+    this.store = new SegmentStore(this.pool);
+  }
+  destroy() {
+    this.pool.destroy();
+  }
+  async prepare(nzbUrl, hint, signal) {
+    const jobId = createHash2("sha1").update(nzbUrl).digest("hex").slice(0, 20);
+    const job = await this.loadOrBuild(jobId, nzbUrl, signal);
+    const chosen = pickFileForEpisode(
+      job.saved.entries.map((e, i) => ({ id: i, name: e.name, size: e.size })),
+      hint
+    );
+    if (!chosen) throw new Error("release has no streamable video");
+    const entry = job.saved.entries[chosen.id];
+    await this.checkHealth(job, entry);
+    return { jobId, fileIndex: chosen.id, name: entry.name, size: entry.size };
+  }
+  async open(jobId, fileIndex) {
+    if (!/^[0-9a-f]{20}$/.test(jobId)) return null;
+    const job = this.jobs.get(jobId) ?? await this.loadSaved(jobId);
+    const entry = job?.saved.entries[fileIndex];
+    if (!job || !entry) return null;
+    return openEntry(entry, job.readers);
+  }
+  // ─── Jobs ──────────────────────────────────────────────────────────────────
+  loadOrBuild(jobId, nzbUrl, signal) {
+    const live = this.jobs.get(jobId);
+    if (live) return Promise.resolve(live);
+    const running = this.preparing.get(jobId);
+    if (running) return running;
+    const p = (async () => await this.loadSaved(jobId) ?? await this.build(jobId, nzbUrl, signal))().finally(() => this.preparing.delete(jobId));
+    this.preparing.set(jobId, p);
+    return p;
+  }
+  async build(jobId, nzbUrl, signal) {
+    const t0 = Date.now();
+    const xml = await fetchNzb(nzbUrl, signal);
+    const nzb = parseNzb(xml);
+    if (!nzb.length) throw new Error("NZB has no files");
+    await mkdir(this.dir, { recursive: true });
+    await writeFile(path.join(this.dir, `${jobId}.nzb`), xml);
+    const scan = await scanNzb(nzb, this.store, this.cfg.connections);
+    for (const p of scan.problems) logger.warn("streams", `Usenet: ${p}`);
+    if (!scan.entries.length) {
+      throw new Error(scan.problems[0] ?? "no playable video in this release");
+    }
+    const saved = {
+      version: 1,
+      nzbUrl,
+      createdAt: Date.now(),
+      layouts: scan.layouts,
+      entries: scan.entries
+    };
+    await writeFile(path.join(this.dir, `${jobId}.json`), JSON.stringify(saved));
+    logger.info(
+      "streams",
+      `Usenet: indexed ${nzb.length} posted files \u2192 ${scan.entries.length} playable in ${Date.now() - t0} ms`
+    );
+    return this.activate(jobId, saved, nzb);
+  }
+  async loadSaved(jobId) {
+    try {
+      const [json, xml] = await Promise.all([
+        readFile(path.join(this.dir, `${jobId}.json`), "utf8"),
+        readFile(path.join(this.dir, `${jobId}.nzb`), "utf8")
+      ]);
+      const saved = JSON.parse(json);
+      if (saved.version !== 1) return null;
+      return this.activate(jobId, saved, parseNzb(xml));
+    } catch {
+      return null;
+    }
+  }
+  async activate(jobId, saved, nzb) {
+    const readers = /* @__PURE__ */ new Map();
+    for (const [idx, layout] of Object.entries(saved.layouts)) {
+      const i = Number(idx);
+      if (nzb[i]) readers.set(i, await new NzbFileReader(nzb[i], this.store).open(layout));
+    }
+    const job = { saved, nzb, readers };
+    this.jobs.set(jobId, job);
+    return job;
+  }
+  /**
+   * STAT an even sample of the articles behind `entry`. Any missing article
+   * means a hole in the video — fail now so the picker can try the next
+   * release instead of the player freezing at minute 40.
+   */
+  async checkHealth(job, entry) {
+    const ids = [];
+    const used = [...new Set(entry.spans.map((s) => s.nzbIndex))];
+    for (const i of used) for (const s of job.nzb[i]?.segments ?? []) ids.push(s.messageId);
+    if (!ids.length) return;
+    const step = Math.max(1, Math.floor(ids.length / HEALTH_SAMPLE));
+    const sample = ids.filter((_, i) => i % step === 0);
+    sample.push(ids[ids.length - 1]);
+    const results = await mapLimit(
+      sample,
+      this.cfg.connections,
+      (id) => this.store.exists(id).catch((err) => err instanceof ArticleMissingError ? false : Promise.reject(err))
+    );
+    const missing = results.filter((ok) => !ok).length;
+    if (missing) {
+      throw new Error(
+        `${missing}/${sample.length} sampled articles are gone from your provider (release expired or taken down)`
+      );
+    }
+  }
+};
+async function fetchNzb(url, signal) {
+  let res;
+  try {
+    res = await fetch(url, {
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2e4)]) : AbortSignal.timeout(2e4),
+      headers: { "User-Agent": "Rewind" }
+    });
+  } catch (err) {
+    throw new Error(`NZB download failed (${describeFetchFailure(err)}) from ${redactUrl(url)}`);
+  }
+  if (!res.ok) {
+    const hint = res.status === 429 ? " \u2014 indexer API/grab limit reached" : "";
+    throw new Error(`NZB download \u2192 HTTP ${res.status}${hint} from ${redactUrl(url)}`);
+  }
+  const text = await res.text();
+  if (!/<nzb\b/i.test(text)) throw new Error(`indexer did not return an NZB (${text.slice(0, 120).replace(/\s+/g, " ")})`);
+  return text;
+}
+
+// src/usenet/server.ts
+init_log();
+import http from "node:http";
+var MIME = {
+  mkv: "video/x-matroska",
+  mp4: "video/mp4",
+  m4v: "video/mp4",
+  avi: "video/x-msvideo",
+  ts: "video/mp2t",
+  m2ts: "video/mp2t",
+  mov: "video/quicktime",
+  webm: "video/webm"
+};
+function createStreamServer(open) {
+  return http.createServer((req, res) => {
+    handle(open, req, res).catch((err) => {
+      logger.warn("streams", `Usenet stream error: ${err.message}`);
+      if (!res.headersSent) {
+        res.writeHead(502, { "Content-Type": "text/plain" });
+        res.end(err.message);
+      } else {
+        res.destroy();
+      }
+    });
+  });
+}
+async function handle(open, req, res) {
+  const m = /^\/usenet\/([0-9a-f]{20})\/(\d+)\/([^/?]*)/.exec(req.url ?? "");
+  if (!m || req.method !== "GET" && req.method !== "HEAD") {
+    res.writeHead(404).end();
+    return;
+  }
+  const file = await open(m[1], Number(m[2]));
+  if (!file) {
+    res.writeHead(404).end();
+    return;
+  }
+  const ext = /\.([a-z0-9]+)$/i.exec(decodeURIComponent(m[3]))?.[1]?.toLowerCase() ?? "";
+  const headers = {
+    "Accept-Ranges": "bytes",
+    "Content-Type": MIME[ext] ?? "application/octet-stream"
+  };
+  const range = parseRange(req.headers.range, file.size);
+  if (range === "invalid") {
+    res.writeHead(416, { "Content-Range": `bytes */${file.size}` }).end();
+    return;
+  }
+  const [start, end] = range ?? [0, file.size - 1];
+  headers["Content-Length"] = end - start + 1;
+  if (range) headers["Content-Range"] = `bytes ${start}-${end}/${file.size}`;
+  res.writeHead(range ? 206 : 200, headers);
+  if (req.method === "HEAD" || file.size === 0) {
+    res.end();
+    return;
+  }
+  const ac = new AbortController();
+  res.on("close", () => ac.abort());
+  for await (const chunk of file.stream(start, end, ac.signal)) {
+    if (ac.signal.aborted) return;
+    if (!res.write(chunk)) {
+      await new Promise((resolve) => {
+        const done = () => {
+          res.off("drain", done);
+          res.off("close", done);
+          resolve();
+        };
+        res.on("drain", done);
+        res.on("close", done);
+      });
+    }
+  }
+  res.end();
+}
+function parseRange(header, size) {
+  if (!header) return null;
+  const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!m || !m[1] && !m[2]) return "invalid";
+  let start;
+  let end;
+  if (!m[1]) {
+    const n = Number(m[2]);
+    start = Math.max(0, size - n);
+    end = size - 1;
+  } else {
+    start = Number(m[1]);
+    end = m[2] ? Math.min(Number(m[2]), size - 1) : size - 1;
+  }
+  if (start >= size || start > end) return "invalid";
+  return [start, end];
+}
+
+// src/usenet/service.ts
+var DEFAULT_STREAM_PORT = 47810;
+async function readUsenetSettings() {
+  if (!hasForgeHost()) return null;
+  const cfg = await getForgeHost().getAddonConfig?.() ?? {};
+  const host2 = (cfg.usenet_host ?? "").trim();
+  if (!host2) return null;
+  const ssl = !/^(0|false|no|off)$/i.test((cfg.usenet_ssl ?? "true").trim());
+  return {
+    host: host2,
+    port: positive(cfg.usenet_port) ?? (ssl ? 563 : 119),
+    ssl,
+    username: (cfg.usenet_username ?? "").trim(),
+    password: cfg.usenet_password ?? "",
+    connections: positive(cfg.usenet_connections) ?? 10,
+    streamPort: positive(cfg.usenet_stream_port) ?? DEFAULT_STREAM_PORT
+  };
+}
+var engine = null;
+var server = null;
+async function getUsenetEngine() {
+  const s = await readUsenetSettings();
+  if (!s) return null;
+  const { streamPort, ...nntp } = s;
+  const key = JSON.stringify(nntp);
+  if (engine?.key !== key) {
+    engine?.engine.destroy();
+    engine = { key, engine: new UsenetEngine(nntp, jobsDir()) };
+  }
+  await ensureServer(streamPort);
+  return { engine: engine.engine, streamPort };
+}
+async function startUsenetService() {
+  const s = await readUsenetSettings();
+  if (s) await ensureServer(s.streamPort);
+}
+async function ensureServer(port) {
+  if (server?.port === port) return server.ready;
+  server?.server.close();
+  const srv = createStreamServer(async (jobId, idx) => {
+    const e = engine?.engine ?? (await getUsenetEngine())?.engine;
+    return e ? e.open(jobId, idx) : null;
+  });
+  const ready = new Promise((resolve, reject) => {
+    srv.once("error", (err) => {
+      logger.error("streams", `Usenet stream server could not listen on 127.0.0.1:${port}: ${err.message}`, err);
+      server = null;
+      reject(err);
+    });
+    srv.listen(port, "127.0.0.1", () => {
+      logger.info("streams", `Usenet stream server listening on 127.0.0.1:${port}`);
+      resolve();
+    });
+  });
+  server = { port, server: srv, ready };
+  return ready;
+}
+async function testUsenetLogin() {
+  const s = await readUsenetSettings();
+  if (!s) return { ok: false, message: "Set the Usenet Provider host + login under API Keys" };
+  const conn = new NntpConnection({ ...s, timeoutMs: 1e4 });
+  try {
+    await conn.connect();
+    return { ok: true, message: `Logged in to ${s.host}:${s.port}${s.ssl ? " (SSL)" : ""}` };
+  } catch (err) {
+    return { ok: false, message: err.message };
+  } finally {
+    conn.close();
+  }
+}
+function jobsDir() {
+  const base = hasForgeHost() && getForgeHost().dataDir || path2.join(os.tmpdir(), "rewind");
+  return path2.join(base, "addons", "forge", "usenet");
+}
+function positive(v) {
+  const n = Number((v ?? "").trim());
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : void 0;
+}
+
+// src/resolvers/usenet.ts
+var UsenetResolver = class {
+  constructor() {
+    this.provider = "usenet";
+    this.accepts = ["usenet"];
+  }
+  async checkAvailability(candidates) {
+    const out = /* @__PURE__ */ new Map();
+    for (const c of candidates) if (c.nzbId) out.set(c.id, true);
+    return out;
+  }
+  async resolve(candidate, signal, hint) {
+    if (!candidate.nzbId) return null;
+    const svc = await getUsenetEngine();
+    if (!svc) {
+      logger.warn("streams", "Usenet: no provider configured \u2014 set Usenet Provider host + login under API Keys");
+      return null;
+    }
+    try {
+      const f = await svc.engine.prepare(candidate.nzbId, hint, signal);
+      return `http://127.0.0.1:${svc.streamPort}/usenet/${f.jobId}/${f.fileIndex}/${encodeURIComponent(f.name)}`;
+    } catch (err) {
+      logger.warn("streams", `Usenet: can't stream "${candidate.rawTitle}": ${err.message}`);
+      return null;
+    }
+  }
+};
+
 // src/resolvers/index.ts
 var FACTORIES = {
   realdebrid: (row) => new RealDebridResolver(row),
@@ -5313,7 +6495,8 @@ var FACTORIES = {
   offcloud: (row) => new OffcloudResolver(row),
   putio: (row) => new PutioResolver(row),
   nzbdav: (row) => new NzbDavResolver(row),
-  altmount: (row) => new AltMountResolver(row)
+  altmount: (row) => new AltMountResolver(row),
+  usenet: () => new UsenetResolver()
 };
 function buildResolver(row) {
   const factory = FACTORIES[row.provider];
@@ -5330,7 +6513,8 @@ var PROVIDER_NAMES = {
   offcloud: "Offcloud",
   putio: "put.io",
   nzbdav: "NZBDav",
-  altmount: "AltMount"
+  altmount: "AltMount",
+  usenet: "Usenet"
 };
 var PROVIDER_TAGS = {
   realdebrid: "RD",
@@ -5342,7 +6526,8 @@ var PROVIDER_TAGS = {
   offcloud: "OC",
   putio: "PIO",
   nzbdav: "NZB",
-  altmount: "ALT"
+  altmount: "ALT",
+  usenet: "NNTP"
 };
 function prettyProvider(provider) {
   return PROVIDER_NAMES[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1);
@@ -5744,8 +6929,8 @@ var TorBoxSearchSource = class {
     const apiKey = this.row.api_key ?? "";
     if (!apiKey) return [];
     const tbImdbId = query.imdbId;
-    const path = query.kind === "movie" ? `/torrents/imdb:${tbImdbId}` : `/torrents/imdb:${tbImdbId}?season=${query.season ?? 1}&episode=${query.episode ?? 1}`;
-    const data = await fetchJson(`${TORBOX_SEARCH_HOST}${path}`, {
+    const path3 = query.kind === "movie" ? `/torrents/imdb:${tbImdbId}` : `/torrents/imdb:${tbImdbId}?season=${query.season ?? 1}&episode=${query.episode ?? 1}`;
+    const data = await fetchJson(`${TORBOX_SEARCH_HOST}${path3}`, {
       signal,
       headers: { Authorization: `Bearer ${apiKey}` }
     });
@@ -6993,41 +8178,181 @@ async function persist(itemId, streams, formatter, sourceNameById, resolverProvi
 }
 function streamRowId(itemId, s) {
   const key = s.url || s.infoHash || s.nzbId || s.id;
-  return createHash2("md5").update(`${itemId}:${key}`).digest("hex");
+  return createHash3("md5").update(`${itemId}:${key}`).digest("hex");
 }
+
+// src/plugin.ts
+init_log();
 
 // manifest.json
 var manifest_default = {
   id: "rewind.forge",
   name: "The Forge",
   version: "2.0.0",
-  description: "Torrent/usenet indexers + debrid resolution for Rewind. Brings the streams pipeline (Torrentio, Zilean, Torznab/Newznab, Comet, EasyNews, TorBox search) and the debrid/usenet resolvers. Installing reveals the Forge tab and the debrid/usenet credentials.",
-  resources: ["stream", "resolve"],
-  types: ["movie", "series", "episode"],
-  idPrefixes: ["tt", "tmdb:"],
+  description: "Torrent/usenet indexers + debrid resolution for Rewind. Brings the streams pipeline (Torrentio, Zilean, Torznab/Newznab, Comet, EasyNews, TorBox search) and the debrid/usenet resolvers, plus a built-in usenet streaming engine (your provider + indexer, no NZBDav needed). Installing reveals the Forge tab and the debrid/usenet credentials.",
+  resources: [
+    "stream",
+    "resolve"
+  ],
+  types: [
+    "movie",
+    "series",
+    "episode"
+  ],
+  idPrefixes: [
+    "tt",
+    "tmdb:"
+  ],
+  provides: {
+    content: [
+      "movies",
+      "series",
+      "anime"
+    ]
+  },
   rewind: {
     kind: "forge",
-    sdk: 1,
+    sdk: 2,
     repo: "j4ckgrey/rewind_forge",
     branch: "main",
     bundlePath: "dist/index.mjs",
     bundleUrl: "https://raw.githubusercontent.com/j4ckgrey/rewind_forge/release/dist/index.mjs",
-    tabs: [{ id: "forge", label: "Forge", icon: "hammer" }],
-    configKeys: [
-      { key: "realdebrid_api_key", label: "Real-Debrid", category: "Debrid Providers", description: "API token from real-debrid.com/apitoken." },
-      { key: "alldebrid_api_key", label: "AllDebrid", category: "Debrid Providers", description: "API key from alldebrid.com/apikeys." },
-      { key: "premiumize_api_key", label: "Premiumize", category: "Debrid Providers", description: "API key from premiumize.me/account." },
-      { key: "torbox_api_key", label: "TorBox", category: "Debrid Providers", description: "API key from torbox.app/settings. Also powers the TorBox search indexer." },
-      { key: "debridlink_api_key", label: "Debrid-Link", category: "Debrid Providers", description: "API token from debrid-link.com/webapp/apikey." },
-      { key: "offcloud_api_key", label: "Offcloud", category: "Debrid Providers", description: "API key from offcloud.com/account/preferences." },
-      { key: "putio_api_key", label: "Put.io", category: "Debrid Providers", description: "OAuth token from put.io/oauth." },
-      { key: "easydebrid_api_key", label: "EasyDebrid", category: "Debrid Providers", description: "API key from easydebrid.com." },
-      { key: "nzbdav_host", label: "NZBDav Host URL", category: "Self-Hosted Usenet", secret: false, placeholder: "http://192.168.1.10:8080", description: "Base URL of your NZBDav instance." },
-      { key: "nzbdav_api_key", label: "NZBDav API Key", category: "Self-Hosted Usenet", description: "Optional \u2014 leave blank if NZBDav requires none." },
-      { key: "altmount_host", label: "AltMount Host URL", category: "Self-Hosted Usenet", secret: false, placeholder: "http://192.168.1.10:9000", description: "Base URL of your AltMount instance." },
-      { key: "altmount_api_key", label: "AltMount API Key", category: "Self-Hosted Usenet", description: "Optional \u2014 leave blank if AltMount requires none." }
+    tabs: [
+      {
+        id: "forge",
+        label: "Forge",
+        icon: "hammer"
+      }
     ],
-    features: ["torrents", "debrid", "usenet"]
+    configKeys: [
+      {
+        key: "usenet_host",
+        label: "Server host",
+        category: "Usenet Provider",
+        secret: false,
+        placeholder: "news.easyusenet.com",
+        description: `Your usenet provider's news server. Rewind streams articles from it directly \u2014 no NZBDav/AltMount needed. Add a "Usenet (built-in)" account in the Forge tab to use it.`
+      },
+      {
+        key: "usenet_port",
+        label: "Port",
+        category: "Usenet Provider",
+        secret: false,
+        placeholder: "563",
+        description: "563 for SSL (default), 119 plain."
+      },
+      {
+        key: "usenet_ssl",
+        label: "SSL",
+        category: "Usenet Provider",
+        secret: false,
+        placeholder: "true",
+        description: "true (default) or false."
+      },
+      {
+        key: "usenet_username",
+        label: "Username",
+        category: "Usenet Provider",
+        secret: false,
+        placeholder: "",
+        description: "Provider login."
+      },
+      {
+        key: "usenet_password",
+        label: "Password",
+        category: "Usenet Provider",
+        description: "Provider password."
+      },
+      {
+        key: "usenet_connections",
+        label: "Connections",
+        category: "Usenet Provider",
+        secret: false,
+        placeholder: "10",
+        description: "Max simultaneous connections \u2014 stay at or under your plan's limit."
+      },
+      {
+        key: "realdebrid_api_key",
+        label: "Real-Debrid",
+        category: "Debrid Providers",
+        description: "API token from real-debrid.com/apitoken."
+      },
+      {
+        key: "alldebrid_api_key",
+        label: "AllDebrid",
+        category: "Debrid Providers",
+        description: "API key from alldebrid.com/apikeys."
+      },
+      {
+        key: "premiumize_api_key",
+        label: "Premiumize",
+        category: "Debrid Providers",
+        description: "API key from premiumize.me/account."
+      },
+      {
+        key: "torbox_api_key",
+        label: "TorBox",
+        category: "Debrid Providers",
+        description: "API key from torbox.app/settings. Also powers the TorBox search indexer."
+      },
+      {
+        key: "debridlink_api_key",
+        label: "Debrid-Link",
+        category: "Debrid Providers",
+        description: "API token from debrid-link.com/webapp/apikey."
+      },
+      {
+        key: "offcloud_api_key",
+        label: "Offcloud",
+        category: "Debrid Providers",
+        description: "API key from offcloud.com/account/preferences."
+      },
+      {
+        key: "putio_api_key",
+        label: "Put.io",
+        category: "Debrid Providers",
+        description: "OAuth token from put.io/oauth."
+      },
+      {
+        key: "easydebrid_api_key",
+        label: "EasyDebrid",
+        category: "Debrid Providers",
+        description: "API key from easydebrid.com."
+      },
+      {
+        key: "nzbdav_host",
+        label: "NZBDav Host URL",
+        category: "Self-Hosted Usenet",
+        secret: false,
+        placeholder: "http://192.168.1.10:8080",
+        description: "Base URL of your NZBDav instance."
+      },
+      {
+        key: "nzbdav_api_key",
+        label: "NZBDav API Key",
+        category: "Self-Hosted Usenet",
+        description: "Optional \u2014 leave blank if NZBDav requires none."
+      },
+      {
+        key: "altmount_host",
+        label: "AltMount Host URL",
+        category: "Self-Hosted Usenet",
+        secret: false,
+        placeholder: "http://192.168.1.10:9000",
+        description: "Base URL of your AltMount instance."
+      },
+      {
+        key: "altmount_api_key",
+        label: "AltMount API Key",
+        category: "Self-Hosted Usenet",
+        description: "Optional \u2014 leave blank if AltMount requires none."
+      }
+    ],
+    features: [
+      "torrents",
+      "debrid",
+      "usenet"
+    ]
   }
 };
 
@@ -7046,7 +8371,9 @@ function buildApi() {
         episodeName: opts.episodeName ?? null
       });
     },
-    resolveStream
+    resolveStream,
+    /** Built-in usenet engine: can we log in to the configured provider? */
+    testUsenet: testUsenetLogin
   };
 }
 function queryFromRequest({ type, id, extra }) {
@@ -7068,6 +8395,9 @@ var addon = defineAddon({
   manifest: manifest_default,
   setup(host2) {
     setForgeHost(host2);
+    startUsenetService().catch(
+      (err) => logger.warn("streams", `Usenet service did not start: ${err.message}`)
+    );
     const api = buildApi();
     return {
       api,

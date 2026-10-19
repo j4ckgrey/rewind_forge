@@ -2,32 +2,169 @@
   "id": "rewind.forge",
   "name": "The Forge",
   "version": "2.0.0",
-  "description": "Torrent/usenet indexers + debrid resolution for Rewind. Brings the streams pipeline (Torrentio, Zilean, Torznab/Newznab, Comet, EasyNews, TorBox search) and the debrid/usenet resolvers. Installing reveals the Forge tab and the debrid/usenet credentials.",
-  "resources": ["stream", "resolve"],
-  "types": ["movie", "series", "episode"],
-  "idPrefixes": ["tt", "tmdb:"],
+  "description": "Torrent/usenet indexers + debrid resolution for Rewind. Brings the streams pipeline (Torrentio, Zilean, Torznab/Newznab, Comet, EasyNews, TorBox search) and the debrid/usenet resolvers, plus a built-in usenet streaming engine (your provider + indexer, no NZBDav needed). Installing reveals the Forge tab and the debrid/usenet credentials.",
+  "resources": [
+    "stream",
+    "resolve"
+  ],
+  "types": [
+    "movie",
+    "series",
+    "episode"
+  ],
+  "idPrefixes": [
+    "tt",
+    "tmdb:"
+  ],
+  "provides": {
+    "content": [
+      "movies",
+      "series",
+      "anime"
+    ]
+  },
   "rewind": {
     "kind": "forge",
-    "sdk": 1,
+    "sdk": 2,
     "repo": "j4ckgrey/rewind_forge",
     "branch": "main",
     "bundlePath": "dist/index.mjs",
     "bundleUrl": "https://raw.githubusercontent.com/j4ckgrey/rewind_forge/release/dist/index.mjs",
-    "tabs": [{ "id": "forge", "label": "Forge", "icon": "hammer" }],
-    "configKeys": [
-      { "key": "realdebrid_api_key", "label": "Real-Debrid", "category": "Debrid Providers", "description": "API token from real-debrid.com/apitoken." },
-      { "key": "alldebrid_api_key", "label": "AllDebrid", "category": "Debrid Providers", "description": "API key from alldebrid.com/apikeys." },
-      { "key": "premiumize_api_key", "label": "Premiumize", "category": "Debrid Providers", "description": "API key from premiumize.me/account." },
-      { "key": "torbox_api_key", "label": "TorBox", "category": "Debrid Providers", "description": "API key from torbox.app/settings. Also powers the TorBox search indexer." },
-      { "key": "debridlink_api_key", "label": "Debrid-Link", "category": "Debrid Providers", "description": "API token from debrid-link.com/webapp/apikey." },
-      { "key": "offcloud_api_key", "label": "Offcloud", "category": "Debrid Providers", "description": "API key from offcloud.com/account/preferences." },
-      { "key": "putio_api_key", "label": "Put.io", "category": "Debrid Providers", "description": "OAuth token from put.io/oauth." },
-      { "key": "easydebrid_api_key", "label": "EasyDebrid", "category": "Debrid Providers", "description": "API key from easydebrid.com." },
-      { "key": "nzbdav_host", "label": "NZBDav Host URL", "category": "Self-Hosted Usenet", "secret": false, "placeholder": "http://192.168.1.10:8080", "description": "Base URL of your NZBDav instance." },
-      { "key": "nzbdav_api_key", "label": "NZBDav API Key", "category": "Self-Hosted Usenet", "description": "Optional — leave blank if NZBDav requires none." },
-      { "key": "altmount_host", "label": "AltMount Host URL", "category": "Self-Hosted Usenet", "secret": false, "placeholder": "http://192.168.1.10:9000", "description": "Base URL of your AltMount instance." },
-      { "key": "altmount_api_key", "label": "AltMount API Key", "category": "Self-Hosted Usenet", "description": "Optional — leave blank if AltMount requires none." }
+    "tabs": [
+      {
+        "id": "forge",
+        "label": "Forge",
+        "icon": "hammer"
+      }
     ],
-    "features": ["torrents", "debrid", "usenet"]
+    "configKeys": [
+      {
+        "key": "usenet_host",
+        "label": "Server host",
+        "category": "Usenet Provider",
+        "secret": false,
+        "placeholder": "news.easyusenet.com",
+        "description": "Your usenet provider's news server. Rewind streams articles from it directly — no NZBDav/AltMount needed. Add a \"Usenet (built-in)\" account in the Forge tab to use it."
+      },
+      {
+        "key": "usenet_port",
+        "label": "Port",
+        "category": "Usenet Provider",
+        "secret": false,
+        "placeholder": "563",
+        "description": "563 for SSL (default), 119 plain."
+      },
+      {
+        "key": "usenet_ssl",
+        "label": "SSL",
+        "category": "Usenet Provider",
+        "secret": false,
+        "placeholder": "true",
+        "description": "true (default) or false."
+      },
+      {
+        "key": "usenet_username",
+        "label": "Username",
+        "category": "Usenet Provider",
+        "secret": false,
+        "placeholder": "",
+        "description": "Provider login."
+      },
+      {
+        "key": "usenet_password",
+        "label": "Password",
+        "category": "Usenet Provider",
+        "description": "Provider password."
+      },
+      {
+        "key": "usenet_connections",
+        "label": "Connections",
+        "category": "Usenet Provider",
+        "secret": false,
+        "placeholder": "10",
+        "description": "Max simultaneous connections — stay at or under your plan's limit."
+      },
+      {
+        "key": "realdebrid_api_key",
+        "label": "Real-Debrid",
+        "category": "Debrid Providers",
+        "description": "API token from real-debrid.com/apitoken."
+      },
+      {
+        "key": "alldebrid_api_key",
+        "label": "AllDebrid",
+        "category": "Debrid Providers",
+        "description": "API key from alldebrid.com/apikeys."
+      },
+      {
+        "key": "premiumize_api_key",
+        "label": "Premiumize",
+        "category": "Debrid Providers",
+        "description": "API key from premiumize.me/account."
+      },
+      {
+        "key": "torbox_api_key",
+        "label": "TorBox",
+        "category": "Debrid Providers",
+        "description": "API key from torbox.app/settings. Also powers the TorBox search indexer."
+      },
+      {
+        "key": "debridlink_api_key",
+        "label": "Debrid-Link",
+        "category": "Debrid Providers",
+        "description": "API token from debrid-link.com/webapp/apikey."
+      },
+      {
+        "key": "offcloud_api_key",
+        "label": "Offcloud",
+        "category": "Debrid Providers",
+        "description": "API key from offcloud.com/account/preferences."
+      },
+      {
+        "key": "putio_api_key",
+        "label": "Put.io",
+        "category": "Debrid Providers",
+        "description": "OAuth token from put.io/oauth."
+      },
+      {
+        "key": "easydebrid_api_key",
+        "label": "EasyDebrid",
+        "category": "Debrid Providers",
+        "description": "API key from easydebrid.com."
+      },
+      {
+        "key": "nzbdav_host",
+        "label": "NZBDav Host URL",
+        "category": "Self-Hosted Usenet",
+        "secret": false,
+        "placeholder": "http://192.168.1.10:8080",
+        "description": "Base URL of your NZBDav instance."
+      },
+      {
+        "key": "nzbdav_api_key",
+        "label": "NZBDav API Key",
+        "category": "Self-Hosted Usenet",
+        "description": "Optional — leave blank if NZBDav requires none."
+      },
+      {
+        "key": "altmount_host",
+        "label": "AltMount Host URL",
+        "category": "Self-Hosted Usenet",
+        "secret": false,
+        "placeholder": "http://192.168.1.10:9000",
+        "description": "Base URL of your AltMount instance."
+      },
+      {
+        "key": "altmount_api_key",
+        "label": "AltMount API Key",
+        "category": "Self-Hosted Usenet",
+        "description": "Optional — leave blank if AltMount requires none."
+      }
+    ],
+    "features": [
+      "torrents",
+      "debrid",
+      "usenet"
+    ]
   }
 }
