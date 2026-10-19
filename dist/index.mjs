@@ -6264,7 +6264,8 @@ var UsenetEngine = class {
   destroy() {
     this.pool.destroy();
   }
-  prepare(nzbUrl, hint, signal) {
+  prepare(rawUrl, hint, signal) {
+    const nzbUrl = cleanNzbUrl(rawUrl);
     return this.judged(nzbUrl, () => this.prepareVideo(nzbUrl, hint, signal));
   }
   async prepareVideo(nzbUrl, hint, signal) {
@@ -6280,7 +6281,8 @@ var UsenetEngine = class {
     return { jobId, fileIndex: chosen.id, name: entry.name, size: entry.size };
   }
   /** Every book file in the release (an ebook, or an audiobook's parts). */
-  prepareBook(nzbUrl, signal) {
+  prepareBook(rawUrl, signal) {
+    const nzbUrl = cleanNzbUrl(rawUrl);
     return this.judged(nzbUrl, async () => {
       const jobId = jobIdFor("book", nzbUrl);
       const job = await this.loadOrBuild(jobId, nzbUrl, "book", signal);
@@ -6401,6 +6403,11 @@ async function fetchNzb(url, signal) {
 function jobIdFor(mode, nzbUrl) {
   const key = mode === "video" ? nzbUrl : `${mode}\0${nzbUrl}`;
   return createHash3("sha1").update(key).digest("hex").slice(0, 20);
+}
+function cleanNzbUrl(url) {
+  let out = url.trim();
+  for (let i = 0; i < 2 && out.includes("&amp;"); i++) out = out.replace(/&amp;/g, "&");
+  return out;
 }
 
 // src/usenet/server.ts
@@ -7263,7 +7270,14 @@ function pickTag(block, tag) {
   const r = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, "i");
   const m = block.match(r);
   if (!m) return void 0;
-  return m[1].replace(/^<!\[CDATA\[/, "").replace(/\]\]>$/, "").trim();
+  return decodeEntities2(m[1].replace(/^<!\[CDATA\[/, "").replace(/\]\]>$/, "").trim());
+}
+function decodeEntities2(s) {
+  let out = s;
+  for (let i = 0; i < 2 && /&(?:[a-z]+|#\d+|#x[0-9a-f]+);/i.test(out); i++) {
+    out = out.replace(/&quot;/g, '"').replace(/&apos;|&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n))).replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16))).replace(/&amp;/g, "&");
+  }
+  return out;
 }
 function pickAttrs(block) {
   const out = /* @__PURE__ */ new Map();
@@ -7278,7 +7292,7 @@ function pickEnclosure(block) {
   const m = /<enclosure\s+([^>]*?)\/?>/i.exec(block);
   if (!m) return null;
   const tag = m[1];
-  const url = /\burl="([^"]*)"/i.exec(tag)?.[1];
+  const url = decodeEntities2(/\burl="([^"]*)"/i.exec(tag)?.[1] ?? "");
   if (!url) return null;
   const length = /\blength="([^"]*)"/i.exec(tag)?.[1];
   const type = /\btype="([^"]*)"/i.exec(tag)?.[1];
