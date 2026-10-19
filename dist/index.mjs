@@ -5605,10 +5605,11 @@ var VintReader = class {
 // src/usenet/media.ts
 var JUNK_EXT = /\.(par2|nfo|sfv|srr|nzb|txt|jpe?g|png|gif|url|exe|sample\.\w+)$/i;
 var VIDEO_EXT3 = /\.(mkv|mp4|m4v|avi|ts|m2ts|mov|webm|wmv|mpg|mpeg)$/i;
-async function scanNzb(files, store, concurrency) {
+var BOOK_EXT = /\.(epub|pdf|cbz|m4b|m4a|mp3|aac|ogg|opus|flac)$/i;
+async function scanNzb(files, store, concurrency, wanted = VIDEO_EXT3) {
   const problems = [];
-  const wanted = files.map((file, index) => ({ file, index })).filter(({ file }) => !JUNK_EXT.test(file.name) && !/\.vol\d+\+\d+/i.test(file.name));
-  const opened = await mapLimit(wanted, concurrency, async ({ file, index }) => {
+  const candidates = files.map((file, index) => ({ file, index })).filter(({ file }) => !JUNK_EXT.test(file.name) && !/\.vol\d+\+\d+/i.test(file.name));
+  const opened = await mapLimit(candidates, concurrency, async ({ file, index }) => {
     const reader = await new NzbFileReader(file, store).open();
     return { index, file, reader, head: await reader.head() };
   });
@@ -5623,9 +5624,9 @@ async function scanNzb(files, store, concurrency) {
       push(rarGroups, rarStem(name), o);
     } else if (/\.\d{3}$/.test(name)) {
       push(splitGroups, name.replace(/\.\d{3}$/, ""), o);
-    } else if (looksLikeVideo(o.head) || VIDEO_EXT3.test(name)) {
+    } else if (wanted.test(name) || wanted.test(`.${sniffExt(o.head)}`)) {
       entries.push({
-        name: VIDEO_EXT3.test(name) ? name : `${name}.${sniffExt(o.head)}`,
+        name: wanted.test(name) ? name : `${name}.${sniffExt(o.head)}`,
         size: o.reader.size,
         spans: [{ nzbIndex: o.index, offset: 0, length: o.reader.size }]
       });
@@ -5633,8 +5634,10 @@ async function scanNzb(files, store, concurrency) {
   }
   for (const [stem, group] of splitGroups) {
     group.sort((a, b) => splitNumber(a.file.name) - splitNumber(b.file.name));
+    const name = wanted.test(stem) ? stem : `${stem}.${sniffExt(group[0].head)}`;
+    if (!wanted.test(name)) continue;
     entries.push({
-      name: VIDEO_EXT3.test(stem) ? stem : `${stem}.${sniffExt(group[0].head)}`,
+      name,
       size: group.reduce((n, o) => n + o.reader.size, 0),
       spans: group.map((o) => ({ nzbIndex: o.index, offset: 0, length: o.reader.size }))
     });
@@ -5653,7 +5656,7 @@ async function scanNzb(files, store, concurrency) {
       throw err;
     }
     for (const e of rarEntries) {
-      if (!VIDEO_EXT3.test(e.name)) continue;
+      if (!wanted.test(e.name)) continue;
       if (e.encrypted) {
         problems.push(`${e.name} is password protected`);
         continue;
@@ -5674,18 +5677,23 @@ async function scanNzb(files, store, concurrency) {
       });
     }
   }
+  const collator = new Intl.Collator(void 0, { numeric: true, sensitivity: "base" });
+  entries.sort((a, b) => collator.compare(a.name, b.name));
   return { entries, layouts, problems };
 }
 function openEntry(entry, readers) {
   const spans = entry.spans.map((s) => ({ file: readers.get(s.nzbIndex), offset: s.offset, length: s.length }));
   return spans.length === 1 && spans[0].offset === 0 && spans[0].length === spans[0].file.size ? spans[0].file : new SpanFile(spans);
 }
-function looksLikeVideo(head) {
-  return sniffExt(head) !== "bin";
-}
 function sniffExt(head) {
   if (head.length >= 4 && head.readUInt32BE(0) === 440786851) return "mkv";
-  if (head.length >= 8 && head.toString("latin1", 4, 8) === "ftyp") return "mp4";
+  if (head.length >= 12 && head.toString("latin1", 4, 8) === "ftyp") {
+    const brand = head.toString("latin1", 8, 12);
+    return brand === "M4B " ? "m4b" : brand === "M4A " ? "m4a" : "mp4";
+  }
+  if (head.length >= 58 && head.toString("latin1", 0, 2) === "PK" && head.toString("latin1", 30, 58) === "mimetypeapplication/epub+zip") return "epub";
+  if (head.length >= 5 && head.toString("latin1", 0, 5) === "%PDF-") return "pdf";
+  if (head.length >= 3 && head.toString("latin1", 0, 3) === "ID3") return "mp3";
   if (head.length >= 12 && head.toString("latin1", 0, 4) === "RIFF" && head.toString("latin1", 8, 11) === "AVI") return "avi";
   if (head.length >= 377 && head[0] === 71 && head[188] === 71 && head[376] === 71) return "ts";
   return "bin";
@@ -6150,6 +6158,7 @@ var SegmentStore = class {
 };
 
 // src/usenet/engine.ts
+var WANTED = { video: VIDEO_EXT3, book: BOOK_EXT };
 var HEALTH_SAMPLE = 24;
 var UsenetEngine = class {
   constructor(cfg, dir) {
@@ -6164,16 +6173,23 @@ var UsenetEngine = class {
     this.pool.destroy();
   }
   async prepare(nzbUrl, hint, signal) {
-    const jobId = createHash2("sha1").update(nzbUrl).digest("hex").slice(0, 20);
-    const job = await this.loadOrBuild(jobId, nzbUrl, signal);
+    const jobId = jobIdFor("video", nzbUrl);
+    const job = await this.loadOrBuild(jobId, nzbUrl, "video", signal);
     const chosen = pickFileForEpisode(
       job.saved.entries.map((e, i) => ({ id: i, name: e.name, size: e.size })),
       hint
     );
     if (!chosen) throw new Error("release has no streamable video");
     const entry = job.saved.entries[chosen.id];
-    await this.checkHealth(job, entry);
+    await this.checkHealth(job, [entry]);
     return { jobId, fileIndex: chosen.id, name: entry.name, size: entry.size };
+  }
+  /** Every book file in the release (an ebook, or an audiobook's parts). */
+  async prepareBook(nzbUrl, signal) {
+    const jobId = jobIdFor("book", nzbUrl);
+    const job = await this.loadOrBuild(jobId, nzbUrl, "book", signal);
+    await this.checkHealth(job, job.saved.entries);
+    return job.saved.entries.map((e, i) => ({ jobId, fileIndex: i, name: e.name, size: e.size }));
   }
   async open(jobId, fileIndex) {
     if (!/^[0-9a-f]{20}$/.test(jobId)) return null;
@@ -6183,26 +6199,26 @@ var UsenetEngine = class {
     return openEntry(entry, job.readers);
   }
   // ─── Jobs ──────────────────────────────────────────────────────────────────
-  loadOrBuild(jobId, nzbUrl, signal) {
+  loadOrBuild(jobId, nzbUrl, mode, signal) {
     const live = this.jobs.get(jobId);
     if (live) return Promise.resolve(live);
     const running = this.preparing.get(jobId);
     if (running) return running;
-    const p = (async () => await this.loadSaved(jobId) ?? await this.build(jobId, nzbUrl, signal))().finally(() => this.preparing.delete(jobId));
+    const p = (async () => await this.loadSaved(jobId) ?? await this.build(jobId, nzbUrl, mode, signal))().finally(() => this.preparing.delete(jobId));
     this.preparing.set(jobId, p);
     return p;
   }
-  async build(jobId, nzbUrl, signal) {
+  async build(jobId, nzbUrl, mode, signal) {
     const t0 = Date.now();
     const xml = await fetchNzb(nzbUrl, signal);
     const nzb = parseNzb(xml);
     if (!nzb.length) throw new Error("NZB has no files");
     await mkdir(this.dir, { recursive: true });
     await writeFile(path.join(this.dir, `${jobId}.nzb`), xml);
-    const scan = await scanNzb(nzb, this.store, this.cfg.connections);
+    const scan = await scanNzb(nzb, this.store, this.cfg.connections, WANTED[mode]);
     for (const p of scan.problems) logger.warn("streams", `Usenet: ${p}`);
     if (!scan.entries.length) {
-      throw new Error(scan.problems[0] ?? "no playable video in this release");
+      throw new Error(scan.problems[0] ?? `no ${mode === "book" ? "book files" : "playable video"} in this release`);
     }
     const saved = {
       version: 1,
@@ -6246,9 +6262,9 @@ var UsenetEngine = class {
    * means a hole in the video — fail now so the picker can try the next
    * release instead of the player freezing at minute 40.
    */
-  async checkHealth(job, entry) {
+  async checkHealth(job, entries) {
     const ids = [];
-    const used = [...new Set(entry.spans.map((s) => s.nzbIndex))];
+    const used = [...new Set(entries.flatMap((e) => e.spans.map((s) => s.nzbIndex)))];
     for (const i of used) for (const s of job.nzb[i]?.segments ?? []) ids.push(s.messageId);
     if (!ids.length) return;
     const step = Math.max(1, Math.floor(ids.length / HEALTH_SAMPLE));
@@ -6284,6 +6300,10 @@ async function fetchNzb(url, signal) {
   const text = await res.text();
   if (!/<nzb\b/i.test(text)) throw new Error(`indexer did not return an NZB (${text.slice(0, 120).replace(/\s+/g, " ")})`);
   return text;
+}
+function jobIdFor(mode, nzbUrl) {
+  const key = mode === "video" ? nzbUrl : `${mode}\0${nzbUrl}`;
+  return createHash2("sha1").update(key).digest("hex").slice(0, 20);
 }
 
 // src/usenet/server.ts
@@ -6379,9 +6399,10 @@ function parseRange(header, size) {
 
 // src/usenet/service.ts
 var DEFAULT_STREAM_PORT = 47810;
-async function readUsenetSettings() {
+async function readUsenetSettings(overrides) {
   if (!hasForgeHost()) return null;
-  const cfg = await getForgeHost().getAddonConfig?.() ?? {};
+  const cfg = { ...await getForgeHost().getAddonConfig?.() ?? {} };
+  for (const [k, v] of Object.entries(overrides ?? {})) if (v.trim()) cfg[k] = v;
   const host2 = (cfg.usenet_host ?? "").trim();
   if (!host2) return null;
   const ssl = !/^(0|false|no|off)$/i.test((cfg.usenet_ssl ?? "true").trim());
@@ -6434,8 +6455,18 @@ async function ensureServer(port) {
   server = { port, server: srv, ready };
   return ready;
 }
-async function testUsenetLogin() {
-  const s = await readUsenetSettings();
+async function prepareBookFiles(nzbUrl, signal) {
+  const svc = await getUsenetEngine();
+  if (!svc) return null;
+  const files = await svc.engine.prepareBook(nzbUrl, signal);
+  return files.map((f) => ({
+    name: f.name,
+    size: f.size,
+    url: `http://127.0.0.1:${svc.streamPort}/usenet/${f.jobId}/${f.fileIndex}/${encodeURIComponent(f.name)}`
+  }));
+}
+async function testUsenetLogin(overrides) {
+  const s = await readUsenetSettings(overrides);
   if (!s) return { ok: false, message: "Set the Usenet Provider host + login under API Keys" };
   const conn = new NntpConnection({ ...s, timeoutMs: 1e4 });
   try {
@@ -7146,6 +7177,54 @@ function pickEnclosure(block) {
   const length = /\blength="([^"]*)"/i.exec(tag)?.[1];
   const type = /\btype="([^"]*)"/i.exec(tag)?.[1];
   return { url, length, type };
+}
+var BOOK_CATS = {
+  ebook: [7020, 7030],
+  audiobook: [3030],
+  any: [7020, 7030, 3030]
+};
+async function searchBookReleases(rows, query, kind, signal) {
+  const usenet = rows.filter((r) => r.enabled === 1 && r.url && (r.source_type === "newznab" || r.source_type === "nzbhydra"));
+  const perIndexer = await Promise.all(usenet.map(async (row) => {
+    const params = new URLSearchParams({ t: "search", q: query, cat: BOOK_CATS[kind].join(","), limit: "100", extended: "1" });
+    if (row.api_key) params.set("apikey", row.api_key);
+    const xml = await fetchText(`${row.url.replace(/\/$/, "")}/api?${params}`, { signal });
+    return xml ? parseBookItems(xml, row) : [];
+  }));
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const r of perIndexer.flat()) {
+    const key = r.title.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+  return out;
+}
+function parseBookItems(xml, row) {
+  const out = [];
+  for (const m of xml.matchAll(/<item>([\s\S]*?)<\/item>/g)) {
+    const block = m[1];
+    const title = pickTag(block, "title") ?? "";
+    const enclosure = pickEnclosure(block);
+    const nzbUrl = enclosure?.url ?? pickTag(block, "link") ?? "";
+    if (!title || !nzbUrl) continue;
+    const attrs = pickAttrs(block);
+    const cats = [...block.matchAll(/<(?:newznab|torznab):attr\s+name="category"\s+value="(\d+)"/g)].map((c) => Number(c[1]));
+    const sizeStr = attrs.get("size") ?? enclosure?.length;
+    const pub = Date.parse(pickTag(block, "pubDate") ?? "");
+    const guid = pickTag(block, "guid") ?? nzbUrl;
+    out.push({
+      id: candidateId(row.id, guid),
+      title,
+      nzbUrl,
+      sizeBytes: sizeStr ? Number(sizeStr) || void 0 : void 0,
+      indexer: row.name,
+      kind: cats.some((c) => c >= 3e3 && c < 4e3) ? "audiobook" : "ebook",
+      publishedAt: Number.isFinite(pub) ? Math.floor(pub / 1e3) : void 0
+    });
+  }
+  return out;
 }
 
 // src/sources/zilean.ts
@@ -7867,6 +7946,7 @@ function parseFormatterConfig(raw) {
 }
 
 // src/pipeline.ts
+var BUILTIN_USENET_ACCOUNT_ID = "builtin-usenet";
 var DEFAULT_SOURCE_TIMEOUT_MS = 2e4;
 var DEFAULT_RESOLVE_TIMEOUT_MS = 3e4;
 var SOURCE_SEARCH_TIMEOUT_MS = 9e3;
@@ -7969,7 +8049,7 @@ async function resolveStream(stream, hint) {
     logger.warn("streams", `Resolve skipped: stream has no resolver assigned (${stream.rawTitle ?? stream.infoHash ?? stream.nzbId ?? "?"})`);
     return null;
   }
-  const accounts = await getForgeHost().listStreamAccounts();
+  const accounts = await listAccountsWithBuiltin();
   const row = accounts.find((a) => a.id === stream.resolverId && a.enabled === 1);
   if (!row) {
     logger.warn("streams", `Resolve failed: assigned resolver ${stream.resolverId} is missing or disabled`);
@@ -8015,8 +8095,26 @@ async function loadSources() {
   const enabled = rows.filter((r) => r.enabled === 1);
   return enabled.map(buildSource).filter((s) => s !== null);
 }
-async function loadAccounts() {
+async function listAccountsWithBuiltin() {
   const rows = await getForgeHost().listStreamAccounts();
+  if (rows.some((r) => r.provider === "usenet") || !await readUsenetSettings()) return rows;
+  return [...rows, {
+    id: BUILTIN_USENET_ACCOUNT_ID,
+    provider: "usenet",
+    kind: "usenet",
+    api_key: null,
+    host: null,
+    enabled: 1,
+    priority: 50,
+    config_json: "{}",
+    premium_until: null,
+    last_checked_at: null,
+    last_error: null,
+    created_at: 0
+  }];
+}
+async function loadAccounts() {
+  const rows = await listAccountsWithBuiltin();
   return rows.filter((r) => r.enabled === 1).map((row) => ({ row, resolver: buildResolver(row) })).filter((x) => x.resolver !== null);
 }
 async function loadSourceRows() {
@@ -8183,6 +8281,7 @@ function streamRowId(itemId, s) {
 
 // src/plugin.ts
 init_log();
+init_host();
 
 // manifest.json
 var manifest_default = {
@@ -8227,49 +8326,56 @@ var manifest_default = {
     configKeys: [
       {
         key: "usenet_host",
-        label: "Server host",
-        category: "Usenet Provider",
+        label: "Server",
+        category: "Usenet",
         secret: false,
-        placeholder: "news.easyusenet.com",
-        description: `Your usenet provider's news server. Rewind streams articles from it directly \u2014 no NZBDav/AltMount needed. Add a "Usenet (built-in)" account in the Forge tab to use it.`
+        placeholder: "news.provider.com",
+        description: "Your usenet provider's news server address. Fill these in and Rewind streams from your own provider \u2014 nothing else to set up.",
+        card: "usenet"
       },
       {
         key: "usenet_port",
         label: "Port",
-        category: "Usenet Provider",
+        category: "Usenet",
         secret: false,
         placeholder: "563",
-        description: "563 for SSL (default), 119 plain."
+        description: "563 = SSL (default).",
+        card: "usenet"
       },
       {
         key: "usenet_ssl",
         label: "SSL",
-        category: "Usenet Provider",
+        category: "Usenet",
         secret: false,
         placeholder: "true",
-        description: "true (default) or false."
+        description: "true (default) or false.",
+        card: "usenet"
       },
       {
         key: "usenet_username",
         label: "Username",
-        category: "Usenet Provider",
+        category: "Usenet",
         secret: false,
         placeholder: "",
-        description: "Provider login."
+        description: "Your provider login.",
+        card: "usenet"
       },
       {
         key: "usenet_password",
         label: "Password",
-        category: "Usenet Provider",
-        description: "Provider password."
+        category: "Usenet",
+        description: "Your provider password.",
+        card: "usenet",
+        placeholder: ""
       },
       {
         key: "usenet_connections",
         label: "Connections",
-        category: "Usenet Provider",
+        category: "Usenet",
         secret: false,
         placeholder: "10",
-        description: "Max simultaneous connections \u2014 stay at or under your plan's limit."
+        description: "Keep at or under your plan's limit.",
+        card: "usenet"
       },
       {
         key: "realdebrid_api_key",
@@ -8373,7 +8479,14 @@ function buildApi() {
     },
     resolveStream,
     /** Built-in usenet engine: can we log in to the configured provider? */
-    testUsenet: testUsenetLogin
+    testUsenet: (overrides) => testUsenetLogin(overrides),
+    /** Books space: search the usenet indexers' book categories. */
+    async searchBooks(opts) {
+      const rows = await getForgeHost().listStreamSources();
+      return searchBookReleases(rows, opts.query, opts.kind ?? "any", AbortSignal.timeout(2e4));
+    },
+    /** Books space: the files of one release, streamable from the engine. */
+    prepareBook: (nzbUrl) => prepareBookFiles(nzbUrl, AbortSignal.timeout(6e4))
   };
 }
 function queryFromRequest({ type, id, extra }) {

@@ -40,49 +40,56 @@
     "configKeys": [
       {
         "key": "usenet_host",
-        "label": "Server host",
-        "category": "Usenet Provider",
+        "label": "Server",
+        "category": "Usenet",
         "secret": false,
-        "placeholder": "news.easyusenet.com",
-        "description": "Your usenet provider's news server. Rewind streams articles from it directly — no NZBDav/AltMount needed. Add a \"Usenet (built-in)\" account in the Forge tab to use it."
+        "placeholder": "news.provider.com",
+        "description": "Your usenet provider's news server address. Fill these in and Rewind streams from your own provider — nothing else to set up.",
+        "card": "usenet"
       },
       {
         "key": "usenet_port",
         "label": "Port",
-        "category": "Usenet Provider",
+        "category": "Usenet",
         "secret": false,
         "placeholder": "563",
-        "description": "563 for SSL (default), 119 plain."
+        "description": "563 = SSL (default).",
+        "card": "usenet"
       },
       {
         "key": "usenet_ssl",
         "label": "SSL",
-        "category": "Usenet Provider",
+        "category": "Usenet",
         "secret": false,
         "placeholder": "true",
-        "description": "true (default) or false."
+        "description": "true (default) or false.",
+        "card": "usenet"
       },
       {
         "key": "usenet_username",
         "label": "Username",
-        "category": "Usenet Provider",
+        "category": "Usenet",
         "secret": false,
         "placeholder": "",
-        "description": "Provider login."
+        "description": "Your provider login.",
+        "card": "usenet"
       },
       {
         "key": "usenet_password",
         "label": "Password",
-        "category": "Usenet Provider",
-        "description": "Provider password."
+        "category": "Usenet",
+        "description": "Your provider password.",
+        "card": "usenet",
+        "placeholder": ""
       },
       {
         "key": "usenet_connections",
         "label": "Connections",
-        "category": "Usenet Provider",
+        "category": "Usenet",
         "secret": false,
         "placeholder": "10",
-        "description": "Max simultaneous connections — stay at or under your plan's limit."
+        "description": "Keep at or under your plan's limit.",
+        "card": "usenet"
       },
       {
         "key": "realdebrid_api_key",
