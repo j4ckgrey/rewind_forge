@@ -4429,7 +4429,7 @@ function matchesPrefs(stream, prefs) {
     if (allExcluded) return false;
   }
   if (prefs.languages.length > 0 && stream.languages.length > 0) {
-    const hit = stream.languages.some((l) => prefs.languages.includes(l));
+    const hit = stream.languages.some((l) => prefs.languages.includes(l) || l === "multi" || l === "dual");
     if (!hit) return false;
   }
   if (prefs.minSeeders != null && stream.seeders != null) {
