@@ -4377,7 +4377,7 @@ init_host();
 // src/pipeline.ts
 init_host();
 init_log();
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 
 // src/filter.ts
 function applyFilters(streams, prefs) {
@@ -5106,9 +5106,9 @@ var RealDebridResolver = class {
     const BATCH = 40;
     for (let i = 0; i < torrents.length; i += BATCH) {
       const slice = torrents.slice(i, i + BATCH);
-      const path3 = slice.map((c) => c.infoHash).join("/");
+      const path4 = slice.map((c) => c.infoHash).join("/");
       const data = await fetchAuthed(
-        `${RD_HOST}/torrents/instantAvailability/${path3}`,
+        `${RD_HOST}/torrents/instantAvailability/${path4}`,
         this.apiKey,
         { signal, label: "Real-Debrid" }
       );
@@ -5309,15 +5309,15 @@ init_log();
 init_host();
 init_log();
 import os from "node:os";
-import path2 from "node:path";
+import path3 from "node:path";
 
 // src/usenet/engine.ts
 init_log();
 init_base2();
 init_base();
-import { createHash as createHash2 } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { createHash as createHash3 } from "node:crypto";
+import { mkdir as mkdir2, readFile as readFile2, writeFile as writeFile2 } from "node:fs/promises";
+import path2 from "node:path";
 
 // src/usenet/files.ts
 var NzbFileReader = class {
@@ -6157,6 +6157,83 @@ var SegmentStore = class {
   }
 };
 
+// src/usenet/verdicts.ts
+import { createHash as createHash2 } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+var DAY = 864e5;
+var TTL = { missing: 14 * DAY, locked: 365 * DAY, empty: 365 * DAY };
+var GOOD_TTL = 30 * DAY;
+var MAX_ENTRIES = 2e4;
+var VerdictStore = class _VerdictStore {
+  constructor(file) {
+    this.file = file;
+    this.map = null;
+    this.saving = null;
+    this.dirty = false;
+  }
+  static key(nzbUrl) {
+    return createHash2("sha1").update(nzbUrl).digest("hex").slice(0, 20);
+  }
+  async get(nzbUrl) {
+    const map = await this.load();
+    const v = map.get(_VerdictStore.key(nzbUrl));
+    if (!v) return null;
+    const ttl = v.ok ? GOOD_TTL : TTL[v.reason];
+    if (Date.now() - v.at > ttl) {
+      map.delete(_VerdictStore.key(nzbUrl));
+      return null;
+    }
+    return v;
+  }
+  async isBad(nzbUrl) {
+    return (await this.get(nzbUrl))?.ok === false;
+  }
+  async good(nzbUrl) {
+    await this.set(nzbUrl, { ok: true, at: Date.now() });
+  }
+  async bad(nzbUrl, reason) {
+    await this.set(nzbUrl, { ok: false, reason, at: Date.now() });
+  }
+  async set(nzbUrl, v) {
+    const map = await this.load();
+    const k = _VerdictStore.key(nzbUrl);
+    map.delete(k);
+    map.set(k, v);
+    while (map.size > MAX_ENTRIES) map.delete(map.keys().next().value);
+    this.dirty = true;
+    await this.flush();
+  }
+  async load() {
+    if (this.map) return this.map;
+    try {
+      this.map = new Map(Object.entries(JSON.parse(await readFile(this.file, "utf8"))));
+    } catch {
+      this.map = /* @__PURE__ */ new Map();
+    }
+    return this.map;
+  }
+  async flush() {
+    if (this.saving) return this.saving;
+    this.saving = (async () => {
+      while (this.dirty) {
+        this.dirty = false;
+        await mkdir(path.dirname(this.file), { recursive: true });
+        await writeFile(this.file, JSON.stringify(Object.fromEntries(this.map ?? [])));
+      }
+    })().finally(() => {
+      this.saving = null;
+    });
+    return this.saving;
+  }
+};
+function classifyFailure(message) {
+  if (/sampled articles are gone|not found on the provider|volumes missing/i.test(message)) return "missing";
+  if (/password|encrypted|compressed inside the RAR/i.test(message)) return "locked";
+  if (/no playable video|no book files|NZB has no files|no streamable video/i.test(message)) return "empty";
+  return null;
+}
+
 // src/usenet/engine.ts
 var WANTED = { video: VIDEO_EXT3, book: BOOK_EXT };
 var HEALTH_SAMPLE = 24;
@@ -6168,11 +6245,29 @@ var UsenetEngine = class {
     this.preparing = /* @__PURE__ */ new Map();
     this.pool = new NntpPool(cfg);
     this.store = new SegmentStore(this.pool);
+    this.verdicts = new VerdictStore(path2.join(dir, "verdicts.json"));
+  }
+  /** Run a prepare and remember whether the release works (see verdicts.ts). */
+  async judged(nzbUrl, run) {
+    try {
+      const out = await run();
+      await this.verdicts.good(nzbUrl).catch(() => {
+      });
+      return out;
+    } catch (err) {
+      const reason = classifyFailure(err.message ?? "");
+      if (reason) await this.verdicts.bad(nzbUrl, reason).catch(() => {
+      });
+      throw err;
+    }
   }
   destroy() {
     this.pool.destroy();
   }
-  async prepare(nzbUrl, hint, signal) {
+  prepare(nzbUrl, hint, signal) {
+    return this.judged(nzbUrl, () => this.prepareVideo(nzbUrl, hint, signal));
+  }
+  async prepareVideo(nzbUrl, hint, signal) {
     const jobId = jobIdFor("video", nzbUrl);
     const job = await this.loadOrBuild(jobId, nzbUrl, "video", signal);
     const chosen = pickFileForEpisode(
@@ -6185,11 +6280,13 @@ var UsenetEngine = class {
     return { jobId, fileIndex: chosen.id, name: entry.name, size: entry.size };
   }
   /** Every book file in the release (an ebook, or an audiobook's parts). */
-  async prepareBook(nzbUrl, signal) {
-    const jobId = jobIdFor("book", nzbUrl);
-    const job = await this.loadOrBuild(jobId, nzbUrl, "book", signal);
-    await this.checkHealth(job, job.saved.entries);
-    return job.saved.entries.map((e, i) => ({ jobId, fileIndex: i, name: e.name, size: e.size }));
+  prepareBook(nzbUrl, signal) {
+    return this.judged(nzbUrl, async () => {
+      const jobId = jobIdFor("book", nzbUrl);
+      const job = await this.loadOrBuild(jobId, nzbUrl, "book", signal);
+      await this.checkHealth(job, job.saved.entries);
+      return job.saved.entries.map((e, i) => ({ jobId, fileIndex: i, name: e.name, size: e.size }));
+    });
   }
   async open(jobId, fileIndex) {
     if (!/^[0-9a-f]{20}$/.test(jobId)) return null;
@@ -6213,8 +6310,8 @@ var UsenetEngine = class {
     const xml = await fetchNzb(nzbUrl, signal);
     const nzb = parseNzb(xml);
     if (!nzb.length) throw new Error("NZB has no files");
-    await mkdir(this.dir, { recursive: true });
-    await writeFile(path.join(this.dir, `${jobId}.nzb`), xml);
+    await mkdir2(this.dir, { recursive: true });
+    await writeFile2(path2.join(this.dir, `${jobId}.nzb`), xml);
     const scan = await scanNzb(nzb, this.store, this.cfg.connections, WANTED[mode]);
     for (const p of scan.problems) logger.warn("streams", `Usenet: ${p}`);
     if (!scan.entries.length) {
@@ -6227,7 +6324,7 @@ var UsenetEngine = class {
       layouts: scan.layouts,
       entries: scan.entries
     };
-    await writeFile(path.join(this.dir, `${jobId}.json`), JSON.stringify(saved));
+    await writeFile2(path2.join(this.dir, `${jobId}.json`), JSON.stringify(saved));
     logger.info(
       "streams",
       `Usenet: indexed ${nzb.length} posted files \u2192 ${scan.entries.length} playable in ${Date.now() - t0} ms`
@@ -6237,8 +6334,8 @@ var UsenetEngine = class {
   async loadSaved(jobId) {
     try {
       const [json, xml] = await Promise.all([
-        readFile(path.join(this.dir, `${jobId}.json`), "utf8"),
-        readFile(path.join(this.dir, `${jobId}.nzb`), "utf8")
+        readFile2(path2.join(this.dir, `${jobId}.json`), "utf8"),
+        readFile2(path2.join(this.dir, `${jobId}.nzb`), "utf8")
       ]);
       const saved = JSON.parse(json);
       if (saved.version !== 1) return null;
@@ -6303,7 +6400,7 @@ async function fetchNzb(url, signal) {
 }
 function jobIdFor(mode, nzbUrl) {
   const key = mode === "video" ? nzbUrl : `${mode}\0${nzbUrl}`;
-  return createHash2("sha1").update(key).digest("hex").slice(0, 20);
+  return createHash3("sha1").update(key).digest("hex").slice(0, 20);
 }
 
 // src/usenet/server.ts
@@ -6479,8 +6576,8 @@ async function testUsenetLogin(overrides) {
   }
 }
 function jobsDir() {
-  const base = hasForgeHost() && getForgeHost().dataDir || path2.join(os.tmpdir(), "rewind");
-  return path2.join(base, "addons", "forge", "usenet");
+  const base = hasForgeHost() && getForgeHost().dataDir || path3.join(os.tmpdir(), "rewind");
+  return path3.join(base, "addons", "forge", "usenet");
 }
 function positive(v) {
   const n = Number((v ?? "").trim());
@@ -6492,10 +6589,19 @@ var UsenetResolver = class {
   constructor() {
     this.provider = "usenet";
     this.accepts = ["usenet"];
+    this.rejected = /* @__PURE__ */ new Set();
   }
   async checkAvailability(candidates) {
+    const svc = await getUsenetEngine();
     const out = /* @__PURE__ */ new Map();
-    for (const c of candidates) if (c.nzbId) out.set(c.id, true);
+    for (const c of candidates) {
+      if (!c.nzbId) continue;
+      if (svc && await svc.engine.verdicts.isBad(c.nzbId)) {
+        this.rejected.add(c.id);
+        continue;
+      }
+      out.set(c.id, true);
+    }
     return out;
   }
   async resolve(candidate, signal, hint) {
@@ -6960,8 +7066,8 @@ var TorBoxSearchSource = class {
     const apiKey = this.row.api_key ?? "";
     if (!apiKey) return [];
     const tbImdbId = query.imdbId;
-    const path3 = query.kind === "movie" ? `/torrents/imdb:${tbImdbId}` : `/torrents/imdb:${tbImdbId}?season=${query.season ?? 1}&episode=${query.episode ?? 1}`;
-    const data = await fetchJson(`${TORBOX_SEARCH_HOST}${path3}`, {
+    const path4 = query.kind === "movie" ? `/torrents/imdb:${tbImdbId}` : `/torrents/imdb:${tbImdbId}?season=${query.season ?? 1}&episode=${query.episode ?? 1}`;
+    const data = await fetchJson(`${TORBOX_SEARCH_HOST}${path4}`, {
       signal,
       headers: { Authorization: `Bearer ${apiKey}` }
     });
@@ -8226,7 +8332,10 @@ async function annotateAvailability(candidates, accounts) {
   for (const { row } of nonVerifying) {
     perDebrid.push({ provider: row.provider, cached: assumedCount, assumed: true });
   }
-  return { resolved: [...direct, ...annotated], perDebrid };
+  const rejected = new Set(cacheMaps.flatMap(({ resolver }) => [...resolver.rejected ?? []]));
+  const kept = rejected.size ? annotated.filter((c) => !rejected.has(c.id)) : annotated;
+  if (rejected.size) logger.info("streams", `Dropped ${annotated.length - kept.length} releases known to be broken`);
+  return { resolved: [...direct, ...kept], perDebrid };
 }
 async function persist(itemId, streams, formatter, sourceNameById, resolverProviderById, episodeName) {
   await getForgeHost().setNativeStreams(
@@ -8276,7 +8385,7 @@ async function persist(itemId, streams, formatter, sourceNameById, resolverProvi
 }
 function streamRowId(itemId, s) {
   const key = s.url || s.infoHash || s.nzbId || s.id;
-  return createHash3("md5").update(`${itemId}:${key}`).digest("hex");
+  return createHash4("md5").update(`${itemId}:${key}`).digest("hex");
 }
 
 // src/plugin.ts
@@ -8480,10 +8589,24 @@ function buildApi() {
     resolveStream,
     /** Built-in usenet engine: can we log in to the configured provider? */
     testUsenet: (overrides) => testUsenetLogin(overrides),
+    /** Known not to play (articles gone, password, nothing playable). */
+    async isKnownBadNzb(nzbUrl) {
+      const svc = await getUsenetEngine();
+      return svc ? svc.engine.verdicts.isBad(nzbUrl) : false;
+    },
     /** Books space: search the usenet indexers' book categories. */
     async searchBooks(opts) {
       const rows = await getForgeHost().listStreamSources();
-      return searchBookReleases(rows, opts.query, opts.kind ?? "any", AbortSignal.timeout(2e4));
+      const found = await searchBookReleases(rows, opts.query, opts.kind ?? "any", AbortSignal.timeout(2e4));
+      const svc = await getUsenetEngine();
+      if (!svc) return found;
+      const out = [];
+      for (const r of found) {
+        const v = await svc.engine.verdicts.get(r.nzbUrl);
+        if (v?.ok === false) continue;
+        out.push({ ...r, verified: v?.ok === true });
+      }
+      return out;
     },
     /** Books space: the files of one release, streamable from the engine. */
     prepareBook: (nzbUrl) => prepareBookFiles(nzbUrl, AbortSignal.timeout(6e4))
