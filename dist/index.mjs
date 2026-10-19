@@ -6007,7 +6007,7 @@ function parseNzb(xml) {
   while ((m = fileRe.exec(xml)) !== null) {
     const subject = decodeEntities(/\bsubject="([^"]*)"/i.exec(m[1])?.[1] ?? "");
     const inner = m[2];
-    const groups = [...inner.matchAll(/<group>([\s\S]*?)<\/group>/gi)].map((g) => g[1].trim());
+    const groups = [...inner.matchAll(/<group>([\s\S]*?)<\/group>/gi)].map((g2) => g2[1].trim());
     const segments = [];
     for (const s of inner.matchAll(/<segment\b([^>]*)>([\s\S]*?)<\/segment>/gi)) {
       const attrs = s[1];
@@ -6520,35 +6520,39 @@ async function readUsenetSettings(overrides) {
     streamPort: positive(cfg.usenet_stream_port) ?? DEFAULT_STREAM_PORT
   };
 }
-var engine = null;
-var server = null;
+var g = globalThis;
+var shared = g.__rewindForgeUsenet ??= { engine: null, server: null, open: null };
+var THIS_MODULE = /* @__PURE__ */ Symbol("forge-usenet");
+shared.open = async (jobId, idx) => {
+  const e = shared.engine?.owner === THIS_MODULE ? shared.engine.engine : (await getUsenetEngine())?.engine;
+  return e ? e.open(jobId, idx) : null;
+};
 async function getUsenetEngine() {
   const s = await readUsenetSettings();
   if (!s) return null;
   const { streamPort, ...nntp } = s;
   const key = JSON.stringify(nntp);
-  if (engine?.key !== key) {
-    engine?.engine.destroy();
-    engine = { key, engine: new UsenetEngine(nntp, jobsDir()) };
+  if (shared.engine?.key !== key || shared.engine.owner !== THIS_MODULE) {
+    shared.engine?.engine.destroy();
+    shared.engine = { key, engine: new UsenetEngine(nntp, jobsDir()), owner: THIS_MODULE };
   }
   await ensureServer(streamPort);
-  return { engine: engine.engine, streamPort };
+  return { engine: shared.engine.engine, streamPort };
 }
 async function startUsenetService() {
   const s = await readUsenetSettings();
   if (s) await ensureServer(s.streamPort);
 }
 async function ensureServer(port) {
-  if (server?.port === port) return server.ready;
-  server?.server.close();
-  const srv = createStreamServer(async (jobId, idx) => {
-    const e = engine?.engine ?? (await getUsenetEngine())?.engine;
-    return e ? e.open(jobId, idx) : null;
-  });
+  if (shared.server?.port === port) return shared.server.ready;
+  const old = shared.server;
+  shared.server = null;
+  if (old) await new Promise((r) => old.server.close(() => r()));
+  const srv = createStreamServer((jobId, idx) => shared.open ? shared.open(jobId, idx) : Promise.resolve(null));
   const ready = new Promise((resolve, reject) => {
     srv.once("error", (err) => {
       logger.error("streams", `Usenet stream server could not listen on 127.0.0.1:${port}: ${err.message}`, err);
-      server = null;
+      if (shared.server?.server === srv) shared.server = null;
       reject(err);
     });
     srv.listen(port, "127.0.0.1", () => {
@@ -6556,7 +6560,7 @@ async function ensureServer(port) {
       resolve();
     });
   });
-  server = { port, server: srv, ready };
+  shared.server = { port, server: srv, ready };
   return ready;
 }
 async function prepareBookFiles(nzbUrl, signal) {
@@ -8422,7 +8426,7 @@ init_host();
 var manifest_default = {
   id: "rewind.forge",
   name: "The Forge",
-  version: "2.0.1",
+  version: "2.0.2",
   description: "Torrent/usenet indexers + debrid resolution for Rewind. Brings the streams pipeline (Torrentio, Zilean, Torznab/Newznab, Comet, EasyNews, TorBox search) and the debrid/usenet resolvers, plus a built-in usenet streaming engine (your provider + indexer, no NZBDav needed). Installing reveals the Forge tab and the debrid/usenet credentials.",
   resources: [
     "stream",
@@ -8626,7 +8630,7 @@ function buildApi() {
       const rows = await getForgeHost().listStreamSources();
       const book = opts.title ? { title: opts.title, author: opts.author } : void 0;
       const found = await searchBookReleases(rows, opts.query, opts.kind ?? "any", AbortSignal.timeout(2e4), book);
-      const svc = await getUsenetEngine();
+      const svc = await getUsenetEngine().catch(() => null);
       if (!svc) return found;
       const out = [];
       for (const r of found) {
