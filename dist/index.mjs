@@ -8520,7 +8520,7 @@ init_host();
 var manifest_default = {
   id: "rewind.forge",
   name: "Forge",
-  version: "2.0.4",
+  version: "2.0.5",
   description: "Torrent/usenet indexers + debrid resolution for Rewind. Brings the streams pipeline (Torrentio, Zilean, Torznab/Newznab, Comet, EasyNews, TorBox search) and the debrid/usenet resolvers, plus a built-in usenet streaming engine (your provider + indexer, no NZBDav needed). Installing reveals Forge tab and the debrid/usenet credentials.",
   resources: [
     "stream",
@@ -8539,8 +8539,7 @@ var manifest_default = {
     content: [
       "movies",
       "series",
-      "anime",
-      "books"
+      "anime"
     ]
   },
   rewind: {
