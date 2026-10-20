@@ -6164,6 +6164,7 @@ import path from "node:path";
 var DAY = 864e5;
 var TTL = { missing: 14 * DAY, locked: 365 * DAY, empty: 365 * DAY };
 var GOOD_TTL = 30 * DAY;
+var CHECKED_TTL = 3 * DAY;
 var MAX_ENTRIES = 2e4;
 var VerdictStore = class _VerdictStore {
   constructor(file) {
@@ -6179,7 +6180,7 @@ var VerdictStore = class _VerdictStore {
     const map = await this.load();
     const v = map.get(_VerdictStore.key(nzbUrl));
     if (!v) return null;
-    const ttl = v.ok ? GOOD_TTL : TTL[v.reason];
+    const ttl = v.ok ? v.checked ? CHECKED_TTL : GOOD_TTL : TTL[v.reason];
     if (Date.now() - v.at > ttl) {
       map.delete(_VerdictStore.key(nzbUrl));
       return null;
@@ -6191,6 +6192,11 @@ var VerdictStore = class _VerdictStore {
   }
   async good(nzbUrl) {
     await this.set(nzbUrl, { ok: true, at: Date.now() });
+  }
+  /** Screened alive (never downgrades a release that already streamed). */
+  async checked(nzbUrl) {
+    if ((await this.get(nzbUrl))?.ok) return;
+    await this.set(nzbUrl, { ok: true, at: Date.now(), checked: true });
   }
   async bad(nzbUrl, reason) {
     await this.set(nzbUrl, { ok: false, reason, at: Date.now() });
@@ -6237,6 +6243,7 @@ function classifyFailure(message) {
 // src/usenet/engine.ts
 var WANTED = { video: VIDEO_EXT3, book: BOOK_EXT };
 var HEALTH_SAMPLE = 24;
+var SCREEN_SAMPLE = 12;
 var UsenetEngine = class {
   constructor(cfg, dir) {
     this.cfg = cfg;
@@ -6290,6 +6297,41 @@ var UsenetEngine = class {
       return job.saved.entries.map((e, i) => ({ jobId, fileIndex: i, name: e.name, size: e.size }));
     });
   }
+  /**
+   * Is this release still on the provider? Grabs the NZB (saved — a later
+   * prepare reuses it, no second grab) and STATs an even sample of its data
+   * articles. Dead → a "missing" verdict; alive → "checked". Indexer or
+   * provider trouble → "unknown" (offered, nothing recorded).
+   */
+  async screen(rawUrl, signal) {
+    const nzbUrl = cleanNzbUrl(rawUrl);
+    const known = await this.verdicts.get(nzbUrl);
+    if (known) return known.ok ? "alive" : "missing";
+    try {
+      const nzb = await this.nzbFor(jobIdFor("video", nzbUrl), nzbUrl, signal);
+      const data = nzb.filter((f) => !/\.par2\b|\.(nfo|sfv|srr)\b/i.test(`${f.name} ${f.subject}`));
+      const ids = (data.length ? data : nzb).flatMap((f) => f.segments.map((s) => s.messageId));
+      if (!ids.length) return "unknown";
+      const step = Math.max(1, Math.floor(ids.length / SCREEN_SAMPLE));
+      const sample = ids.filter((_, i) => i % step === 0).slice(0, SCREEN_SAMPLE);
+      sample.push(ids[ids.length - 1]);
+      const results = await mapLimit(
+        sample,
+        Math.min(4, this.cfg.connections),
+        (id) => this.store.exists(id).catch((err) => err instanceof ArticleMissingError ? false : Promise.reject(err))
+      );
+      if (results.some((ok) => !ok)) {
+        await this.verdicts.bad(nzbUrl, "missing").catch(() => {
+        });
+        return "missing";
+      }
+      await this.verdicts.checked(nzbUrl).catch(() => {
+      });
+      return "alive";
+    } catch {
+      return "unknown";
+    }
+  }
   async open(jobId, fileIndex) {
     if (!/^[0-9a-f]{20}$/.test(jobId)) return null;
     const job = this.jobs.get(jobId) ?? await this.loadSaved(jobId);
@@ -6309,11 +6351,7 @@ var UsenetEngine = class {
   }
   async build(jobId, nzbUrl, mode, signal) {
     const t0 = Date.now();
-    const xml = await fetchNzb(nzbUrl, signal);
-    const nzb = parseNzb(xml);
-    if (!nzb.length) throw new Error("NZB has no files");
-    await mkdir2(this.dir, { recursive: true });
-    await writeFile2(path2.join(this.dir, `${jobId}.nzb`), xml);
+    const nzb = await this.nzbFor(jobId, nzbUrl, signal);
     const scan = await scanNzb(nzb, this.store, this.cfg.connections, WANTED[mode]);
     for (const p of scan.problems) logger.warn("streams", `Usenet: ${p}`);
     if (!scan.entries.length) {
@@ -6332,6 +6370,21 @@ var UsenetEngine = class {
       `Usenet: indexed ${nzb.length} posted files \u2192 ${scan.entries.length} playable in ${Date.now() - t0} ms`
     );
     return this.activate(jobId, saved, nzb);
+  }
+  /** The job's NZB: saved copy (screening grabbed it) or a fresh grab. */
+  async nzbFor(jobId, nzbUrl, signal) {
+    const file = path2.join(this.dir, `${jobId}.nzb`);
+    const saved = await readFile2(file, "utf8").catch(() => null);
+    if (saved) {
+      const nzb2 = parseNzb(saved);
+      if (nzb2.length) return nzb2;
+    }
+    const xml = await fetchNzb(nzbUrl, signal);
+    const nzb = parseNzb(xml);
+    if (!nzb.length) throw new Error("NZB has no files");
+    await mkdir2(this.dir, { recursive: true });
+    await writeFile2(file, xml);
+    return nzb;
   }
   async loadSaved(jobId) {
     try {
@@ -7455,6 +7508,45 @@ function buildSource(row) {
 }
 var SOURCE_TYPES = Object.keys(FACTORIES2);
 
+// src/usenet/screen.ts
+init_log();
+var WANT_ALIVE = 5;
+var MAX_SCREENED = 12;
+var CONCURRENCY = 4;
+var BUDGET_MS = 8e3;
+async function screenUsenet(streams, isUsenet) {
+  const queue = streams.filter((s) => s.nzbId && isUsenet(s));
+  if (!queue.length) return streams;
+  const svc = await getUsenetEngine().catch(() => null);
+  if (!svc) return streams;
+  const signal = AbortSignal.timeout(BUDGET_MS);
+  const dead = /* @__PURE__ */ new Set();
+  let alive = 0;
+  let screened = 0;
+  let grabbed = 0;
+  let next = 0;
+  const worker = async () => {
+    while (next < queue.length && alive < WANT_ALIVE && grabbed < MAX_SCREENED && !signal.aborted) {
+      const s = queue[next++];
+      const known = await svc.engine.verdicts.get(s.nzbId);
+      if (!known) grabbed += 1;
+      const r = await svc.engine.screen(s.nzbId, signal);
+      screened += 1;
+      if (r === "missing") dead.add(s.id);
+      else if (r === "alive") alive += 1;
+    }
+  };
+  const t0 = Date.now();
+  await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+  if (dead.size || grabbed) {
+    logger.info(
+      "streams",
+      `Usenet: screened ${screened} releases (${grabbed} new) \u2192 ${alive} alive, ${dead.size} gone from the provider (dropped) in ${Date.now() - t0} ms`
+    );
+  }
+  return dead.size ? streams.filter((s) => !dead.has(s.id)) : streams;
+}
+
 // src/formatter.ts
 var RES_MAP_NAMES = {
   "2160p": "4K",
@@ -8141,11 +8233,13 @@ async function syncNativeStreams(opts) {
     strict: prefs.bingeStrictReleaseGroup,
     preferPacks: prefs.bingeOnlySeasonPacks
   }) : sorted;
+  const usenetResolvers = new Set(accounts.filter((a) => a.row.provider === "usenet").map((a) => a.row.id));
+  const screened = usenetResolvers.size ? await screenUsenet(pinned, (s) => !!s.resolverId && usenetResolvers.has(s.resolverId)) : pinned;
   const sourceNameById = new Map(sourceRows.map((r) => [r.id, r.name]));
   const resolverProviderById = new Map(accounts.map((a) => [a.row.id, a.row.provider]));
   await persist(
     itemId,
-    pinned,
+    screened,
     formatter ?? DEFAULT_FORMATTER_CONFIG,
     sourceNameById,
     resolverProviderById,
@@ -8159,12 +8253,12 @@ async function syncNativeStreams(opts) {
   const assumedStr = breakdown(
     perDebrid.filter((d) => d.assumed).map((d) => [prettyProvider(d.provider), d.cached])
   );
-  if (pinned.length > 0) {
+  if (screened.length > 0) {
     const cachedPart = verifiedStr ? ` \xB7 cached: ${verifiedStr}` : "";
     const assumedPart = assumedStr ? ` \xB7 assumed: ${assumedStr}` : "";
     logger.success(
       "streams",
-      `${title} \u2014 ${pinned.length} streams in ${tookSec}s \xB7 sources: ${sourcesStr}${cachedPart}${assumedPart}`
+      `${title} \u2014 ${screened.length} streams in ${tookSec}s \xB7 sources: ${sourcesStr}${cachedPart}${assumedPart}`
     );
   } else {
     let why;
@@ -8178,7 +8272,7 @@ async function syncNativeStreams(opts) {
     }
     logger.warn("streams", `${title} \u2014 0 streams (${why}) in ${tookSec}s`);
   }
-  return pinned;
+  return screened;
 }
 async function resolveStream(stream, hint) {
   if (!stream.resolverId) {
@@ -8426,7 +8520,7 @@ init_host();
 var manifest_default = {
   id: "rewind.forge",
   name: "The Forge",
-  version: "2.0.2",
+  version: "2.0.3",
   description: "Torrent/usenet indexers + debrid resolution for Rewind. Brings the streams pipeline (Torrentio, Zilean, Torznab/Newznab, Comet, EasyNews, TorBox search) and the debrid/usenet resolvers, plus a built-in usenet streaming engine (your provider + indexer, no NZBDav needed). Installing reveals the Forge tab and the debrid/usenet credentials.",
   resources: [
     "stream",
@@ -8636,7 +8730,7 @@ function buildApi() {
       for (const r of found) {
         const v = await svc.engine.verdicts.get(r.nzbUrl);
         if (v?.ok === false) continue;
-        out.push({ ...r, verified: v?.ok === true });
+        out.push({ ...r, verified: v?.ok === true && !v.checked });
       }
       return out;
     },
