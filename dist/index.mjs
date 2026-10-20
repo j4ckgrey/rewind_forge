@@ -8343,6 +8343,9 @@ async function listAccountsWithBuiltin() {
     created_at: 0
   }];
 }
+async function usenetEnabled() {
+  return (await listAccountsWithBuiltin()).some((r) => r.provider === "usenet" && r.enabled === 1);
+}
 async function loadAccounts() {
   const rows = await listAccountsWithBuiltin();
   return rows.filter((r) => r.enabled === 1).map((row) => ({ row, resolver: buildResolver(row) })).filter((x) => x.resolver !== null);
@@ -8520,7 +8523,7 @@ init_host();
 var manifest_default = {
   id: "rewind.forge",
   name: "Forge",
-  version: "2.0.5",
+  version: "2.0.6",
   description: "Torrent/usenet indexers + debrid resolution for Rewind. Brings the streams pipeline (Torrentio, Zilean, Torznab/Newznab, Comet, EasyNews, TorBox search) and the debrid/usenet resolvers, plus a built-in usenet streaming engine (your provider + indexer, no NZBDav needed). Installing reveals Forge tab and the debrid/usenet credentials.",
   resources: [
     "stream",
@@ -8719,7 +8722,10 @@ function buildApi() {
       return svc ? svc.engine.verdicts.isBad(nzbUrl) : false;
     },
     /** Books space: search the usenet indexers' book categories. */
+    /** Usenet switched on (provider set up, account not disabled)? */
+    usenetEnabled,
     async searchBooks(opts) {
+      if (!await usenetEnabled()) return [];
       const rows = await getForgeHost().listStreamSources();
       const book = opts.title ? { title: opts.title, author: opts.author } : void 0;
       const found = await searchBookReleases(rows, opts.query, opts.kind ?? "any", AbortSignal.timeout(2e4), book);
@@ -8734,7 +8740,10 @@ function buildApi() {
       return out;
     },
     /** Books space: the files of one release, streamable from the engine. */
-    prepareBook: (nzbUrl) => prepareBookFiles(nzbUrl, AbortSignal.timeout(6e4))
+    async prepareBook(nzbUrl) {
+      if (!await usenetEnabled()) throw new Error("usenet is switched off");
+      return prepareBookFiles(nzbUrl, AbortSignal.timeout(6e4));
+    }
   };
 }
 function queryFromRequest({ type, id, extra }) {
