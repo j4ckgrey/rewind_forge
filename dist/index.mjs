@@ -15,8 +15,8 @@ var __export = (target, all) => {
 };
 
 // src/host.ts
-function setForgeHost(host2) {
-  _host = host2;
+function setForgeHost(host3) {
+  _host = host3;
 }
 function getForgeHost() {
   if (!_host) {
@@ -58,6 +58,92 @@ var init_log = __esm({
       warn: (c, m) => sink().warn(c, m),
       error: (c, m, e) => sink().error(c, m, e)
     };
+  }
+});
+
+// src/sources/base.ts
+import { createHash } from "node:crypto";
+function candidateId(sourceId, sourceLocalKey) {
+  return createHash("md5").update(`${sourceId}:${sourceLocalKey}`).digest("hex");
+}
+function redactUrl(url) {
+  let out = url.replace(SECRET_PARAM_RE, "$1\u2022\u2022\u2022");
+  out = out.replace(/\/([A-Za-z0-9]{20,})(?=\/|$)/g, "/\u2022\u2022\u2022");
+  return out;
+}
+function hostLabel(url, label) {
+  if (label) return label;
+  try {
+    return new URL(url).host;
+  } catch {
+    return "source";
+  }
+}
+function describeFetchFailure(err) {
+  if (err instanceof Error) {
+    if (err.name === "AbortError" || err.name === "TimeoutError") return "timed out / aborted";
+    const cause = err.cause;
+    return cause?.code || cause?.message || err.message || err.name;
+  }
+  return String(err);
+}
+function readSourceConfig(row, fallback) {
+  if (!row.config_json) return fallback;
+  try {
+    const parsed = JSON.parse(row.config_json);
+    return { ...fallback, ...parsed };
+  } catch {
+    return fallback;
+  }
+}
+async function loggedFetch(url, opts) {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), opts.timeoutMs ?? 2e4);
+  if (opts.signal) {
+    if (opts.signal.aborted) ac.abort();
+    else opts.signal.addEventListener("abort", () => ac.abort(), { once: true });
+  }
+  const label = hostLabel(url, opts.label);
+  try {
+    const res = await fetch(url, { signal: ac.signal, headers: opts.headers });
+    if (!res.ok) {
+      const body = (await res.text().catch(() => "")).slice(0, 200).replace(/\s+/g, " ").trim();
+      logger.warn(
+        "streams",
+        `Indexer ${label} \u2192 HTTP ${res.status} ${res.statusText} on ${redactUrl(url)}` + (body ? ` \xB7 ${body}` : "")
+      );
+      return null;
+    }
+    return await res.text();
+  } catch (err) {
+    logger.warn("streams", `Indexer ${label} request failed (${describeFetchFailure(err)}) on ${redactUrl(url)}`);
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+async function fetchJson(url, opts = {}) {
+  const text = await loggedFetch(url, opts);
+  if (text == null) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    logger.warn(
+      "streams",
+      `Indexer ${hostLabel(url, opts.label)} returned non-JSON on ${redactUrl(url)} \xB7 ${text.slice(0, 160).replace(/\s+/g, " ").trim()}`
+    );
+    return null;
+  }
+}
+async function fetchText(url, opts = {}) {
+  return loggedFetch(url, opts);
+}
+var SECRET_PARAM_RE;
+var init_base = __esm({
+  "src/sources/base.ts"() {
+    "use strict";
+    init_log();
+    SECRET_PARAM_RE = /([?&](?:apikey|api_key|apitoken|token|auth_token|passkey|password|pass|key|secret)=)[^&#]*/gi;
   }
 });
 
@@ -129,15 +215,15 @@ function cleanTitle(rawTitle) {
   title = title.replace(whitespacesRegex, " ");
   return title.trim();
 }
-function getMatchIndices(regex, str) {
-  const match = regex.exec(str);
+function getMatchIndices(regex, str2) {
+  const match = regex.exec(str2);
   if (!match)
     return [];
   const indices = [];
   indices.push(match.index, match.index + match[0].length);
   for (let i = 1; i < match.length; i++) {
     if (match[i] !== void 0) {
-      const captureIndex = str.indexOf(match[i], match.index);
+      const captureIndex = str2.indexOf(match[i], match.index);
       indices.push(captureIndex, captureIndex + match[i].length);
     } else {
       indices.push(-1, -1);
@@ -509,7 +595,7 @@ function toCleanMonth() {
   const re = /(?:feb(?:ruary)?|jan(?:uary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)/gi;
   return (title, m) => {
     if (typeof m.value === "string") {
-      m.value = m.value.replace(re, (str) => str.substring(0, 3));
+      m.value = m.value.replace(re, (str2) => str2.substring(0, 3));
     }
   };
 }
@@ -685,8 +771,8 @@ function toValueSetMultiWithTransform(toV) {
 function toIntArray() {
   return (title, m) => {
     if (typeof m.value === "string") {
-      const num = parseInt(m.value);
-      m.value = !isNaN(num) ? [num] : [];
+      const num2 = parseInt(m.value);
+      m.value = !isNaN(num2) ? [num2] : [];
     } else {
       m.value = [];
     }
@@ -703,10 +789,10 @@ function toIntRangeTill() {
       m.value = null;
       return;
     }
-    const num = parseInt(parts[0]);
-    if (!isNaN(num)) {
+    const num2 = parseInt(parts[0]);
+    if (!isNaN(num2)) {
       const nums = [];
-      for (let i = 1; i <= num; i++) {
+      for (let i = 1; i <= num2; i++) {
         nums.push(i);
       }
       m.value = nums;
@@ -1966,11 +2052,11 @@ var init_handlers = __esm({
           }
           const match = title.substring(startIndex).match(re);
           if (match && match[1]) {
-            const num = parseInt(match[1], 10);
-            if (!isNaN(num)) {
+            const num2 = parseInt(match[1], 10);
+            if (!isNaN(num2)) {
               m.mIndex = startIndex + match.index;
               m.mValue = match[0];
-              m.value = [num];
+              m.value = [num2];
               m.remove = true;
             }
           }
@@ -4116,10 +4202,10 @@ function parseReleaseName(rawTitle) {
     seasonPack
   };
 }
-function parseCandidate(candidate) {
-  const parsed = parseReleaseName(candidate.rawTitle);
+function parseCandidate(candidate2) {
+  const parsed = parseReleaseName(candidate2.rawTitle);
   return {
-    ...candidate,
+    ...candidate2,
     ...parsed
   };
 }
@@ -4160,92 +4246,6 @@ var init_parser2 = __esm({
     ptt = new Parser().addHandlers(handlers);
     SEASON_WORD = "(?:season|\u0441\u0435\u0437\u043E\u043D|temporada|stagione|sezon|saison|staffel)";
     EPISODE_WORD = "(?:episode|episodio|epis\xF3dio|\u0441\u0435\u0440\u0438\u0438|\u0441\u0435\u0440\u0438\u044F|odcinek|folge|\xE9pisode|cap\xEDtulo|capitulo)";
-  }
-});
-
-// src/sources/base.ts
-import { createHash } from "node:crypto";
-function candidateId(sourceId, sourceLocalKey) {
-  return createHash("md5").update(`${sourceId}:${sourceLocalKey}`).digest("hex");
-}
-function redactUrl(url) {
-  let out = url.replace(SECRET_PARAM_RE, "$1\u2022\u2022\u2022");
-  out = out.replace(/\/([A-Za-z0-9]{20,})(?=\/|$)/g, "/\u2022\u2022\u2022");
-  return out;
-}
-function hostLabel(url, label) {
-  if (label) return label;
-  try {
-    return new URL(url).host;
-  } catch {
-    return "source";
-  }
-}
-function describeFetchFailure(err) {
-  if (err instanceof Error) {
-    if (err.name === "AbortError" || err.name === "TimeoutError") return "timed out / aborted";
-    const cause = err.cause;
-    return cause?.code || cause?.message || err.message || err.name;
-  }
-  return String(err);
-}
-function readSourceConfig(row, fallback) {
-  if (!row.config_json) return fallback;
-  try {
-    const parsed = JSON.parse(row.config_json);
-    return { ...fallback, ...parsed };
-  } catch {
-    return fallback;
-  }
-}
-async function loggedFetch(url, opts) {
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), opts.timeoutMs ?? 2e4);
-  if (opts.signal) {
-    if (opts.signal.aborted) ac.abort();
-    else opts.signal.addEventListener("abort", () => ac.abort(), { once: true });
-  }
-  const label = hostLabel(url, opts.label);
-  try {
-    const res = await fetch(url, { signal: ac.signal, headers: opts.headers });
-    if (!res.ok) {
-      const body = (await res.text().catch(() => "")).slice(0, 200).replace(/\s+/g, " ").trim();
-      logger.warn(
-        "streams",
-        `Indexer ${label} \u2192 HTTP ${res.status} ${res.statusText} on ${redactUrl(url)}` + (body ? ` \xB7 ${body}` : "")
-      );
-      return null;
-    }
-    return await res.text();
-  } catch (err) {
-    logger.warn("streams", `Indexer ${label} request failed (${describeFetchFailure(err)}) on ${redactUrl(url)}`);
-    return null;
-  } finally {
-    clearTimeout(t);
-  }
-}
-async function fetchJson(url, opts = {}) {
-  const text = await loggedFetch(url, opts);
-  if (text == null) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    logger.warn(
-      "streams",
-      `Indexer ${hostLabel(url, opts.label)} returned non-JSON on ${redactUrl(url)} \xB7 ${text.slice(0, 160).replace(/\s+/g, " ").trim()}`
-    );
-    return null;
-  }
-}
-async function fetchText(url, opts = {}) {
-  return loggedFetch(url, opts);
-}
-var SECRET_PARAM_RE;
-var init_base = __esm({
-  "src/sources/base.ts"() {
-    "use strict";
-    init_log();
-    SECRET_PARAM_RE = /([?&](?:apikey|api_key|apitoken|token|auth_token|passkey|password|pass|key|secret)=)[^&#]*/gi;
   }
 });
 
@@ -4357,953 +4357,320 @@ var init_base2 = __esm({
   }
 });
 
+// src/plugin.ts
+import { createHash as createHash5, randomUUID } from "node:crypto";
+
+// ../zero_addon_sdk/src/storage.ts
+async function migrate(db2, steps) {
+  const row = await db2.get("PRAGMA user_version");
+  const current = row?.user_version ?? 0;
+  for (let v = current + 1; v <= steps.length; v += 1) {
+    await db2.transaction(async () => {
+      await db2.exec(steps[v - 1]);
+      await db2.exec(`PRAGMA user_version = ${v}`);
+    });
+  }
+  return steps.length;
+}
+
 // ../zero_addon_sdk/src/manifest.ts
-var SDK_PROTOCOL_VERSION = 2;
+var SDK_PROTOCOL_VERSION = 3;
 
 // ../zero_addon_sdk/src/addon.ts
 function defineAddon(def) {
   return {
     manifest: def.manifest,
-    async register(host2) {
-      const { resources = {}, api } = await def.setup(host2);
-      return { sdk: SDK_PROTOCOL_VERSION, manifest: def.manifest, resources, api };
+    async register(host3) {
+      const { resources = {}, actions: actions2 = {}, routes = {}, services = {}, api } = await def.setup(host3);
+      const sdk = def.manifest.zero.sdk ?? Math.min(2, SDK_PROTOCOL_VERSION);
+      return { sdk, manifest: def.manifest, resources, actions: actions2, routes, services, ...api !== void 0 ? { api } : {} };
     }
   };
 }
 
-// src/plugin.ts
-init_host();
-
-// src/pipeline.ts
-init_host();
+// src/books.ts
 init_log();
-import { createHash as createHash4 } from "node:crypto";
+import path4 from "node:path";
 
-// src/filter.ts
-function applyFilters(streams, prefs) {
-  return streams.filter((s) => matchesPrefs(s, prefs));
-}
-function applySeasonEpisodeGate(streams, query) {
-  if (query.kind === "movie") {
-    return streams.filter(
-      (s) => s.seasons.length === 0 && s.episodes.length === 0
-    );
-  }
-  if (query.kind !== "series") return streams;
-  const wantedSeason = query.season;
-  const wantedEpisode = query.episode;
-  if (!wantedSeason && !wantedEpisode) return streams;
-  return streams.filter((s) => {
-    const hasSeasons = s.seasons.length > 0;
-    const hasEpisodes = s.episodes.length > 0;
-    if (!hasSeasons && !hasEpisodes) return true;
-    if (s.seasonPack && wantedSeason) {
-      return s.seasons.includes(wantedSeason);
-    }
-    if (hasEpisodes && wantedEpisode) {
-      if (!s.episodes.includes(wantedEpisode)) return false;
-      if (hasSeasons && wantedSeason && !s.seasons.includes(wantedSeason)) {
-        return false;
-      }
-      return true;
-    }
-    if (hasSeasons && wantedSeason) return s.seasons.includes(wantedSeason);
-    return true;
-  });
-}
-function matchesPrefs(stream, prefs) {
-  if (prefs.resolutions.length > 0 && !prefs.resolutions.includes(stream.resolution)) {
-    return false;
-  }
-  if (prefs.codecs.length > 0) {
-    if (!stream.codec || !prefs.codecs.includes(stream.codec)) return false;
-  }
-  if (!prefs.hdrAllowed && stream.hdrFlags > 0) return false;
-  if (stream.sizeBytes != null) {
-    const mb = stream.sizeBytes / (1024 * 1024);
-    if (prefs.sizeMinMb != null && mb < prefs.sizeMinMb) return false;
-    if (prefs.sizeMaxMb != null && mb > prefs.sizeMaxMb) return false;
-  }
-  if (prefs.excludedLanguages.length > 0 && stream.languages.length > 0) {
-    const allExcluded = stream.languages.every((l) => prefs.excludedLanguages.includes(l));
-    if (allExcluded) return false;
-  }
-  if (prefs.languages.length > 0 && stream.languages.length > 0) {
-    const hit = stream.languages.some((l) => prefs.languages.includes(l) || l === "multi" || l === "dual");
-    if (!hit) return false;
-  }
-  if (prefs.minSeeders != null && stream.seeders != null) {
-    if (stream.seeders < prefs.minSeeders) return false;
-  }
-  return true;
-}
-function applyAvailabilityFilters(streams, prefs) {
-  if (!prefs.excludeUncached) return streams;
-  return streams.filter((s) => s.cachedOnDebrid || s.assumedCached);
-}
-function parseStreamPrefs(row) {
-  const safeJson = (s, fallback) => {
-    try {
-      return JSON.parse(s);
-    } catch {
-      return fallback;
-    }
-  };
-  const CODEC_ALIASES = {
-    hevc: "h265",
-    x265: "h265",
-    avc: "h264",
-    x264: "h264"
-  };
-  const VALID_CODECS = /* @__PURE__ */ new Set(["h264", "h265", "av1", "vp9", "mpeg2"]);
-  const normalizeCodecs = (raw) => raw.map((c) => CODEC_ALIASES[c.toLowerCase()] ?? c).filter((c) => VALID_CODECS.has(c));
-  const scope = row.binge_pin_scope === "series" ? "series" : "season";
-  return {
-    resolutions: safeJson(row.resolutions_json, []),
-    codecs: normalizeCodecs(safeJson(row.codecs_json, [])),
-    hdrAllowed: row.hdr_allowed === 1,
-    sizeMinMb: row.size_min_mb,
-    sizeMaxMb: row.size_max_mb,
-    languages: safeJson(row.languages_json, []),
-    excludedLanguages: safeJson(row.excluded_languages_json ?? "[]", []),
-    sortOrder: safeJson(row.sort_order_json, ["resolution", "cached", "seeders", "size"]),
-    bingePinReleaseGroup: row.binge_pin_release_group === 1,
-    minSeeders: row.min_seeders,
-    excludeUncached: row.exclude_uncached === 1,
-    bingeOnlySeasonPacks: (row.binge_only_season_packs ?? 0) === 1,
-    bingeStrictReleaseGroup: (row.binge_strict_release_group ?? 0) === 1,
-    bingePinScope: scope
-  };
-}
-
-// src/pipeline.ts
-init_parser2();
-
-// src/resolvers/alldebrid.ts
-init_base2();
-var AD_HOST = "https://api.alldebrid.com/v4";
-var AllDebridResolver = class {
+// src/sources/torznab.ts
+init_base();
+var TorznabSource = class {
   constructor(row) {
     this.row = row;
-    this.provider = "alldebrid";
-    this.accepts = ["torrent"];
-    this.apiKey = row.api_key ?? "";
+    this.type = row.source_type;
+    const isUsenet = row.source_type === "newznab" || row.source_type === "nzbhydra";
+    this.kind = isUsenet ? "usenet" : "torrent";
   }
-  async checkAvailability(candidates, signal) {
-    const out = /* @__PURE__ */ new Map();
-    if (!this.apiKey) return out;
-    const hashes = candidates.filter((c) => c.infoHash);
-    if (hashes.length === 0) return out;
-    const BATCH = 50;
-    for (let i = 0; i < hashes.length; i += BATCH) {
-      const slice = hashes.slice(i, i + BATCH);
-      const params = new URLSearchParams();
-      params.set("agent", "zero");
-      for (const c of slice) params.append("magnets[]", c.infoHash);
-      const data = await fetchAuthed(
-        `${AD_HOST}/magnet/instant?${params.toString()}`,
-        this.apiKey,
-        { headerScheme: "query", queryKeyName: "apikey", signal }
-      );
-      const byHash = /* @__PURE__ */ new Map();
-      for (const m of data?.data?.magnets ?? []) {
-        if (m.hash) byHash.set(m.hash.toLowerCase(), m.instant === true);
-      }
-      for (const c of slice) out.set(c.id, byHash.get(c.infoHash) ?? false);
+  async search(query, signal) {
+    if (!this.row.url) return [];
+    const cfg = readSourceConfig(this.row, {
+      kind: this.kind === "usenet" ? "newznab" : "torznab",
+      categories: this.kind === "usenet" ? query.kind === "movie" ? [2e3] : [5e3] : query.kind === "movie" ? [2e3] : [5e3],
+      apiKey: this.row.api_key ?? ""
+    });
+    const params = new URLSearchParams();
+    params.set("t", query.kind === "movie" ? "movie" : "tvsearch");
+    if (cfg.apiKey || this.row.api_key) params.set("apikey", cfg.apiKey || this.row.api_key);
+    if (cfg.categories?.length) params.set("cat", cfg.categories.join(","));
+    if (query.imdbId) params.set("imdbid", query.imdbId.replace(/^tt/i, ""));
+    if (query.kind === "series") {
+      if (query.season != null) params.set("season", String(query.season));
+      if (query.episode != null) params.set("ep", String(query.episode));
     }
-    return out;
-  }
-  async resolve(candidate, signal, hint) {
-    if (!this.apiKey || !candidate.infoHash) return null;
-    const uploadBody = new URLSearchParams();
-    uploadBody.set("agent", "zero");
-    uploadBody.append("magnets[]", magnetFromHash(candidate.infoHash));
-    const uploaded = await fetchAuthed(
-      `${AD_HOST}/magnet/upload?apikey=${encodeURIComponent(this.apiKey)}`,
-      this.apiKey,
-      {
-        method: "POST",
-        headerScheme: "raw",
-        // already in URL
-        body: uploadBody,
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        signal
-      }
-    );
-    const mag = uploaded?.data?.magnets?.[0];
-    if (!mag?.id) return null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const status = await fetchAuthed(
-        `${AD_HOST}/magnet/status?id=${mag.id}&apikey=${encodeURIComponent(this.apiKey)}`,
-        this.apiKey,
-        { headerScheme: "raw", signal }
-      );
-      const m = status?.data?.magnets;
-      if (m?.links?.length) {
-        const { pickFileForEpisode: pickFileForEpisode2 } = await Promise.resolve().then(() => (init_base2(), base_exports));
-        const pickable = m.links.map((l, i) => ({ id: i, name: l.filename, size: l.size }));
-        const chosen = pickFileForEpisode2(pickable, hint) ?? pickable[0];
-        const link = m.links[chosen.id];
-        if (!link) return null;
-        const unlocked = await fetchAuthed(
-          `${AD_HOST}/link/unlock?link=${encodeURIComponent(link.link)}&apikey=${encodeURIComponent(this.apiKey)}`,
-          this.apiKey,
-          { headerScheme: "raw", signal }
-        );
-        return unlocked?.data?.link ?? link.link;
-      }
-      await sleep(2e3);
+    if (query.title && (query.kind === "series" || !query.imdbId)) {
+      params.set("q", query.title);
     }
-    return null;
+    const base = this.row.url.replace(/\/$/, "");
+    const url = `${base}/api?${params.toString()}`;
+    const xml = await fetchText(url, { signal });
+    if (!xml) return [];
+    return parseTorznabXml(xml, this.row, this.kind === "usenet");
   }
 };
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-// src/resolvers/nzbdav.ts
-init_log();
-init_base2();
-init_base();
-var DEFAULT_POLL_MS = 2e3;
-var DEFAULT_MAX_WAIT_MS = 9e4;
-var DEFAULT_CONTENT_PREFIX = "/content";
-var NzbDavResolver = class {
-  constructor(row) {
-    this.provider = "nzbdav";
-    this.accepts = ["usenet"];
-    this.host = (row.host ?? "").replace(/\/$/, "");
-    this.apiKey = row.api_key ?? "";
-    const cfg = parseConfig(row.config_json);
-    this.publicHost = (cfg.publicHost ?? this.host).replace(/\/$/, "");
-    this.webdavUser = cfg.webdavUser;
-    this.webdavPassword = cfg.webdavPassword;
-    this.pollIntervalMs = cfg.pollIntervalMs ?? DEFAULT_POLL_MS;
-    this.maxWaitMs = cfg.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
-    this.contentPathPrefix = cfg.contentPathPrefix ?? DEFAULT_CONTENT_PREFIX;
-  }
-  async checkAvailability(candidates, _signal) {
-    const out = /* @__PURE__ */ new Map();
-    for (const c of candidates) if (c.nzbId) out.set(c.id, true);
-    return out;
-  }
-  async resolve(candidate, signal, hint) {
-    if (!this.host || !candidate.nzbId) return null;
-    const category = pickCategory(hint, candidate);
-    const jobLabel = sanitiseJobLabel(candidate.rawTitle || candidate.description || candidate.id);
-    const added = await this.sabRequest({
-      mode: "addurl",
-      name: candidate.nzbId,
-      cat: category,
-      nzbname: jobLabel,
-      output: "json"
-    }, signal);
-    if (!added?.status || !added.nzo_ids?.length) return null;
-    const nzoId = added.nzo_ids[0];
-    const slot = await this.waitForCompletion(nzoId, signal);
-    if (!slot) return null;
-    const folderName = basename(slot.storage ?? slot.name ?? jobLabel);
-    const jobCategory = slot.category ?? category;
-    const folderUrl = `${this.host}${this.contentPathPrefix}/${encodeSegment(jobCategory)}/${encodeSegment(folderName)}`;
-    const files = await this.listWebdavFiles(folderUrl, signal);
-    if (!files.length) return null;
-    const chosen = pickFileForEpisode(
-      files.map((f, i) => ({ id: i, name: f.name, size: f.size })),
-      hint
-    );
-    if (!chosen) return null;
-    const chosenFile = files[chosen.id];
-    const publicFolder = `${this.publicHost}${this.contentPathPrefix}/${encodeSegment(jobCategory)}/${encodeSegment(folderName)}`;
-    return embedBasicAuth(`${publicFolder}/${encodeSegment(chosenFile.name)}`, this.webdavUser, this.webdavPassword);
-  }
-  async sabRequest(params, signal) {
-    const sp = new URLSearchParams({ ...params, apikey: this.apiKey });
-    const url = `${this.host}${this.sabApiPath()}?${sp.toString()}`;
-    try {
-      const res = await fetch(url, {
-        headers: { "x-api-key": this.apiKey },
-        signal
-      });
-      if (!res.ok) {
-        const body = (await res.text().catch(() => "")).slice(0, 200).replace(/\s+/g, " ").trim();
-        const hint = res.status === 401 || res.status === 403 ? " \u2014 check the API key" : "";
-        logger.warn(
-          "streams",
-          `Usenet ${this.host} (SABnzbd mode=${params.mode ?? "?"}) \u2192 HTTP ${res.status} ${res.statusText}${hint} on ${redactUrl(url)}` + (body ? ` \xB7 ${body}` : "")
-        );
-        return null;
-      }
-      return await res.json();
-    } catch (err) {
-      logger.warn("streams", `Usenet ${this.host} (SABnzbd mode=${params.mode ?? "?"}) request failed (${describeFetchFailure(err)})`);
-      return null;
-    }
-  }
-  /** Override point so AltMount can swap to its own API path. */
-  sabApiPath() {
-    return "/api";
-  }
-  async waitForCompletion(nzoId, signal) {
-    const deadline = Date.now() + this.maxWaitMs;
-    while (Date.now() < deadline) {
-      if (signal?.aborted) return null;
-      const history = await this.sabRequest({
-        mode: "history",
-        nzo_ids: nzoId,
-        output: "json"
-      }, signal);
-      const slot = history?.history?.slots?.find((s) => s.nzo_id === nzoId);
-      if (slot?.status?.toLowerCase() === "completed") return slot;
-      if (slot?.status?.toLowerCase() === "failed") return null;
-      await sleep2(this.pollIntervalMs, signal);
-    }
-    return null;
-  }
-  async listWebdavFiles(folderUrl, signal) {
-    const headers = {
-      Depth: "infinity",
-      "Content-Type": "application/xml"
-    };
-    const basic = basicAuthHeader(this.webdavUser, this.webdavPassword);
-    if (basic) headers.Authorization = basic;
-    try {
-      const res = await fetch(folderUrl, { method: "PROPFIND", headers, signal });
-      if (!res.ok) {
-        logger.warn("streams", `Usenet ${this.host} WebDAV PROPFIND \u2192 HTTP ${res.status} ${res.statusText} on ${redactUrl(folderUrl)}`);
-        return [];
-      }
-      const xml = await res.text();
-      return parsePropfindFiles(xml, folderUrl);
-    } catch (err) {
-      logger.warn("streams", `Usenet ${this.host} WebDAV PROPFIND failed (${describeFetchFailure(err)}) on ${redactUrl(folderUrl)}`);
-      return [];
-    }
-  }
-};
-function parseConfig(raw) {
-  if (!raw) return {};
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
-}
-function pickCategory(hint, c) {
-  if (hint?.season != null || hint?.episode != null) return "TV";
-  const title = (c.rawTitle || c.description || "").toLowerCase();
-  return /s\d{2}e\d{2}|season|episode/.test(title) ? "TV" : "Movies";
-}
-function sanitiseJobLabel(s) {
-  const cleaned = s.replace(/[\u0000-\u001F\u007F]+/g, " ").replace(/[^\x20-\x7E]/g, "").replace(/[/\\]/g, "_").replace(/\s+/g, " ").trim().slice(0, 240);
-  return cleaned || "zero-nzb";
-}
-function basename(p) {
-  const parts = p.replace(/\\/g, "/").split("/").filter(Boolean);
-  return parts[parts.length - 1] ?? p;
-}
-function encodeSegment(s) {
-  return s.split("/").map((p) => encodeURIComponent(p)).join("/");
-}
-function basicAuthHeader(user, pass) {
-  if (!user || !pass) return null;
-  return `Basic ${Buffer.from(`${user}:${pass}`).toString("base64")}`;
-}
-function embedBasicAuth(url, user, pass) {
-  if (!user || !pass) return url;
-  return url.replace(/^(https?:\/\/)/i, (m) => `${m}${encodeURIComponent(user)}:${encodeURIComponent(pass)}@`);
-}
-async function sleep2(ms, signal) {
-  await new Promise((resolve) => {
-    const t = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => {
-      clearTimeout(t);
-      resolve();
-    }, { once: true });
-  });
-}
-var VIDEO_EXT2 = /\.(mkv|mp4|avi|m4v|ts|webm|mov|m2ts)$/i;
-function parsePropfindFiles(xml, baseUrl) {
-  const stripped = xml.replace(/<\/?[a-z0-9]+:/gi, (m2) => m2.replace(/[a-z0-9]+:/i, ""));
+function parseTorznabXml(xml, row, isUsenet) {
   const items = [];
-  const responseRe = /<response>([\s\S]*?)<\/response>/gi;
+  const itemRegex = /<item>([\s\S]*?)<\/item>/g;
   let m;
-  const baseHrefPath = (() => {
-    try {
-      return new URL(baseUrl).pathname.replace(/\/$/, "");
-    } catch {
-      return "";
-    }
-  })();
-  while ((m = responseRe.exec(stripped)) !== null) {
+  while ((m = itemRegex.exec(xml)) !== null) {
     const block = m[1];
-    const href = /<href>([\s\S]*?)<\/href>/i.exec(block)?.[1]?.trim();
-    if (!href) continue;
-    const isCollection = /<resourcetype>[\s\S]*?<collection\s*\/?>[\s\S]*?<\/resourcetype>/i.test(block);
-    if (isCollection) continue;
-    const lengthStr = /<getcontentlength>([\s\S]*?)<\/getcontentlength>/i.exec(block)?.[1]?.trim();
-    const size = lengthStr ? parseInt(lengthStr, 10) || 0 : 0;
-    let hrefPath;
-    try {
-      hrefPath = new URL(href, baseUrl).pathname;
-    } catch {
-      hrefPath = href;
+    const title = pickTag(block, "title") ?? "";
+    const link = pickTag(block, "link") ?? "";
+    const guid = pickTag(block, "guid") ?? link;
+    const description = pickTag(block, "description") ?? "";
+    const attrs = pickAttrs(block);
+    const enclosure = pickEnclosure(block);
+    const nzbUrl = enclosure?.type === "application/x-nzb" ? enclosure.url : enclosure?.url ?? link;
+    const infoHash = (attrs.get("infohash") ?? attrs.get("infoHash"))?.toLowerCase() ?? void 0;
+    const seedersStr = attrs.get("seeders");
+    const enclosureSize = enclosure?.length;
+    const sizeStr = attrs.get("size") ?? pickTag(block, "size") ?? enclosureSize ?? void 0;
+    const seeders = seedersStr ? parseInt(seedersStr, 10) : void 0;
+    const sizeBytes = sizeStr ? parseInt(sizeStr, 10) : void 0;
+    if (!link && !infoHash && !nzbUrl) continue;
+    if (isUsenet) {
+      if (!nzbUrl) continue;
+      items.push({
+        id: candidateId(row.id, guid || nzbUrl),
+        sourceType: row.source_type,
+        sourceId: row.id,
+        name: row.name,
+        description: description || title,
+        rawTitle: title,
+        nzbId: nzbUrl,
+        // NZB download URL — usenet resolvers fetch + submit this.
+        sizeBytes,
+        meta: { guid }
+      });
+    } else if (infoHash) {
+      items.push({
+        id: candidateId(row.id, infoHash),
+        sourceType: row.source_type,
+        sourceId: row.id,
+        name: row.name,
+        description: description || title,
+        rawTitle: title,
+        infoHash,
+        sizeBytes,
+        seeders,
+        meta: { guid, magnetLink: link.startsWith("magnet:") ? link : void 0 }
+      });
     }
-    if (baseHrefPath && hrefPath.startsWith(baseHrefPath)) {
-      hrefPath = hrefPath.slice(baseHrefPath.length);
-    }
-    const name = decodeURIComponent(basename(hrefPath));
-    if (!name) continue;
-    if (!VIDEO_EXT2.test(name) && size < 50 * 1024 * 1024) continue;
-    items.push({ name, size });
   }
   return items;
 }
-
-// src/resolvers/altmount.ts
-var AltMountResolver = class extends NzbDavResolver {
-  constructor(row) {
-    let cfg = {};
-    try {
-      cfg = JSON.parse(row.config_json || "{}");
-    } catch {
-    }
-    if (cfg.contentPathPrefix == null) cfg.contentPathPrefix = "/webdav";
-    super({ ...row, config_json: JSON.stringify(cfg) });
-    this.provider = "altmount";
-  }
-  sabApiPath() {
-    return "/sabnzbd/api";
-  }
-};
-
-// src/resolvers/debridlink.ts
-init_base2();
-var DL_HOST = "https://debrid-link.com/api/v2";
-var DebridLinkResolver = class {
-  constructor(row) {
-    this.row = row;
-    this.provider = "debridlink";
-    this.accepts = ["torrent"];
-    this.apiKey = row.api_key ?? "";
-  }
-  async checkAvailability(candidates, signal) {
-    const out = /* @__PURE__ */ new Map();
-    if (!this.apiKey) return out;
-    const torrents = candidates.filter((c) => c.infoHash);
-    if (torrents.length === 0) return out;
-    const BATCH = 25;
-    for (let i = 0; i < torrents.length; i += BATCH) {
-      const slice = torrents.slice(i, i + BATCH);
-      const params = new URLSearchParams();
-      params.set("url", slice.map((c) => magnetFromHash(c.infoHash)).join(","));
-      const data = await fetchAuthed(
-        `${DL_HOST}/seedbox/cached?${params.toString()}`,
-        this.apiKey,
-        { signal }
-      );
-      const byHash = data?.value ?? {};
-      for (const c of slice) out.set(c.id, byHash[c.infoHash] === true);
-    }
-    return out;
-  }
-  async resolve(candidate, signal, hint) {
-    if (!this.apiKey || !candidate.infoHash) return null;
-    const added = await fetchAuthed(
-      `${DL_HOST}/seedbox/add`,
-      this.apiKey,
-      {
-        method: "POST",
-        body: new URLSearchParams({ url: magnetFromHash(candidate.infoHash) }),
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        signal
-      }
-    );
-    const id = added?.value?.id;
-    if (!id) return null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const list = await fetchAuthed(
-        `${DL_HOST}/seedbox/list?ids=${id}`,
-        this.apiKey,
-        { signal }
-      );
-      const files = list?.value?.[0]?.files ?? [];
-      if (files.length) {
-        const { pickFileForEpisode: pickFileForEpisode2 } = await Promise.resolve().then(() => (init_base2(), base_exports));
-        const pickable = files.map((f, i) => ({ id: i, name: f.name, size: f.size }));
-        const chosen = pickFileForEpisode2(pickable, hint);
-        if (chosen) {
-          const file = files[chosen.id];
-          if (file?.downloadUrl) return file.downloadUrl;
-        }
-      }
-      await new Promise((r) => setTimeout(r, 1500));
-    }
-    return null;
-  }
-};
-
-// src/resolvers/easydebrid.ts
-init_base2();
-var ED_HOST = "https://easydebrid.com/api/v1";
-var EasyDebridResolver = class {
-  constructor(row) {
-    this.row = row;
-    this.provider = "easydebrid";
-    this.accepts = ["torrent"];
-    this.apiKey = row.api_key ?? "";
-  }
-  async checkAvailability(candidates, signal) {
-    const out = /* @__PURE__ */ new Map();
-    if (!this.apiKey) return out;
-    const torrents = candidates.filter((c) => c.infoHash);
-    if (torrents.length === 0) return out;
-    const BATCH = 50;
-    for (let i = 0; i < torrents.length; i += BATCH) {
-      const slice = torrents.slice(i, i + BATCH);
-      const data = await fetchAuthed(
-        `${ED_HOST}/link/lookup`,
-        this.apiKey,
-        {
-          method: "POST",
-          body: JSON.stringify({ urls: slice.map((c) => magnetFromHash(c.infoHash)) }),
-          headers: { "Content-Type": "application/json" },
-          signal
-        }
-      );
-      const cached = data?.cached ?? [];
-      slice.forEach((c, idx) => out.set(c.id, cached[idx] === true));
-    }
-    return out;
-  }
-  async resolve(candidate, signal, hint) {
-    if (!this.apiKey || !candidate.infoHash) return null;
-    const data = await fetchAuthed(
-      `${ED_HOST}/link/generate`,
-      this.apiKey,
-      {
-        method: "POST",
-        body: JSON.stringify({ url: magnetFromHash(candidate.infoHash) }),
-        headers: { "Content-Type": "application/json" },
-        signal
-      }
-    );
-    if (!data?.files?.length) return null;
-    const { pickFileForEpisode: pickFileForEpisode2 } = await Promise.resolve().then(() => (init_base2(), base_exports));
-    const pickable = data.files.map((f, i) => ({ id: i, name: f.name, size: f.size }));
-    const chosen = pickFileForEpisode2(pickable, hint);
-    if (!chosen) return null;
-    return data.files[chosen.id]?.url ?? null;
-  }
-};
-
-// src/resolvers/offcloud.ts
-init_base2();
-var OC_HOST = "https://offcloud.com/api";
-var OffcloudResolver = class {
-  constructor(row) {
-    this.row = row;
-    this.provider = "offcloud";
-    this.accepts = ["torrent"];
-    this.apiKey = row.api_key ?? "";
-  }
-  async checkAvailability(candidates, signal) {
-    const out = /* @__PURE__ */ new Map();
-    if (!this.apiKey) return out;
-    const torrents = candidates.filter((c) => c.infoHash);
-    if (torrents.length === 0) return out;
-    const BATCH = 50;
-    for (let i = 0; i < torrents.length; i += BATCH) {
-      const slice = torrents.slice(i, i + BATCH);
-      const data = await fetchAuthed(
-        `${OC_HOST}/cache?apiKey=${encodeURIComponent(this.apiKey)}`,
-        this.apiKey,
-        {
-          method: "POST",
-          headerScheme: "raw",
-          body: JSON.stringify({ hashes: slice.map((c) => c.infoHash) }),
-          headers: { "Content-Type": "application/json" },
-          signal
-        }
-      );
-      const cached = new Set((data?.cachedItems ?? []).map((h) => h.toLowerCase()));
-      for (const c of slice) out.set(c.id, cached.has(c.infoHash));
-    }
-    return out;
-  }
-  async resolve(candidate, signal, hint) {
-    if (!this.apiKey || !candidate.infoHash) return null;
-    const added = await fetchAuthed(
-      `${OC_HOST}/cloud?apiKey=${encodeURIComponent(this.apiKey)}`,
-      this.apiKey,
-      {
-        method: "POST",
-        headerScheme: "raw",
-        body: JSON.stringify({ url: magnetFromHash(candidate.infoHash) }),
-        headers: { "Content-Type": "application/json" },
-        signal
-      }
-    );
-    if (added?.isDirectLink && added.url) return added.url;
-    const id = added?.requestId;
-    if (!id) return null;
-    const explored = await fetchAuthed(
-      `${OC_HOST}/cloud/explore/${id}?apiKey=${encodeURIComponent(this.apiKey)}`,
-      this.apiKey,
-      { headerScheme: "raw", signal }
-    );
-    if (!Array.isArray(explored) || explored.length === 0) return null;
-    if (hint?.episode || hint?.season) {
-      const { parseSeasonEpisode: parseSeasonEpisode2 } = await Promise.resolve().then(() => (init_parser2(), parser_exports));
-      const match = explored.find((url) => {
-        const name = decodeURIComponent(url.split("/").pop() ?? "");
-        const p = parseSeasonEpisode2(name);
-        if (hint.season && p.seasons.length > 0 && !p.seasons.includes(hint.season)) return false;
-        if (hint.episode && !p.episodes.includes(hint.episode)) return false;
-        return true;
-      });
-      if (match) return match;
-    }
-    const biggest = [...explored].sort((a, b) => b.length - a.length)[0];
-    return biggest ?? null;
-  }
-};
-
-// src/resolvers/premiumize.ts
-init_base2();
-var PM_HOST = "https://www.premiumize.me/api";
-var PremiumizeResolver = class {
-  constructor(row) {
-    this.row = row;
-    this.provider = "premiumize";
-    this.accepts = ["torrent"];
-    this.apiKey = row.api_key ?? "";
-  }
-  async checkAvailability(candidates, signal) {
-    const out = /* @__PURE__ */ new Map();
-    if (!this.apiKey) return out;
-    const torrents = candidates.filter((c) => c.infoHash);
-    if (torrents.length === 0) return out;
-    const BATCH = 50;
-    for (let i = 0; i < torrents.length; i += BATCH) {
-      const slice = torrents.slice(i, i + BATCH);
-      const params = new URLSearchParams();
-      params.set("apikey", this.apiKey);
-      for (const c of slice) params.append("items[]", c.infoHash);
-      const data = await fetchAuthed(
-        `${PM_HOST}/cache/check?${params.toString()}`,
-        this.apiKey,
-        { headerScheme: "raw", method: "POST", signal }
-      );
-      const arr = data?.response ?? [];
-      slice.forEach((c, idx) => out.set(c.id, arr[idx] === true));
-    }
-    return out;
-  }
-  async resolve(candidate, signal, hint) {
-    if (!this.apiKey || !candidate.infoHash) return null;
-    const params = new URLSearchParams();
-    params.set("apikey", this.apiKey);
-    params.set("src", magnetFromHash(candidate.infoHash));
-    const data = await fetchAuthed(
-      `${PM_HOST}/transfer/directdl`,
-      this.apiKey,
-      {
-        method: "POST",
-        body: params,
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        headerScheme: "raw",
-        signal
-      }
-    );
-    if (!data?.content?.length) return null;
-    const { pickFileForEpisode: pickFileForEpisode2 } = await Promise.resolve().then(() => (init_base2(), base_exports));
-    const pickable = data.content.map((c, i) => ({
-      id: i,
-      name: c.path.split("/").pop() ?? c.path,
-      size: c.size
-    }));
-    const chosen = pickFileForEpisode2(pickable, hint);
-    if (!chosen) return null;
-    const file = data.content[chosen.id];
-    return file?.stream_link ?? file?.link ?? null;
-  }
-};
-
-// src/resolvers/putio.ts
-init_base2();
-var PUTIO_HOST = "https://api.put.io/v2";
-var PutioResolver = class {
-  constructor(row) {
-    this.row = row;
-    this.provider = "putio";
-    this.accepts = ["torrent"];
-    this.apiKey = row.api_key ?? "";
-  }
-  async checkAvailability(candidates, _signal) {
-    const out = /* @__PURE__ */ new Map();
-    for (const c of candidates) if (c.infoHash) out.set(c.id, false);
-    return out;
-  }
-  // hint currently ignored — Put.io doesn't expose a per-file picker in
-  // the v2 transfers flow; the returned file_id is the parent folder if
-  // the torrent contains multiple files. Walking /files/{id}/children to
-  // pick by S×E is a follow-up; for now Put.io continues to serve the
-  // root file as the prior code did.
-  async resolve(candidate, signal, _hint) {
-    if (!this.apiKey || !candidate.infoHash) return null;
-    const body = new URLSearchParams({
-      url: magnetFromHash(candidate.infoHash),
-      save_parent_id: "0"
-    });
-    const added = await fetchAuthed(
-      `${PUTIO_HOST}/transfers/add`,
-      this.apiKey,
-      {
-        method: "POST",
-        body,
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        signal
-      }
-    );
-    const id = added?.transfer?.id;
-    if (!id) return null;
-    let fileId = added.transfer.file_id;
-    if (!fileId) {
-      for (let attempt = 0; attempt < 4 && !fileId; attempt++) {
-        await new Promise((r) => setTimeout(r, 2e3));
-        const status = await fetchAuthed(
-          `${PUTIO_HOST}/transfers/${id}`,
-          this.apiKey,
-          { signal }
-        );
-        fileId = status?.transfer?.file_id;
-      }
-    }
-    if (!fileId) return null;
-    return `${PUTIO_HOST}/files/${fileId}/download?oauth_token=${encodeURIComponent(this.apiKey)}`;
-  }
-};
-
-// src/resolvers/realdebrid.ts
-init_base2();
-var RD_HOST = "https://api.real-debrid.com/rest/1.0";
-var RealDebridResolver = class {
-  constructor(row) {
-    this.row = row;
-    this.provider = "realdebrid";
-    this.accepts = ["torrent"];
-    // RD retired /torrents/instantAvailability (403 disabled_endpoint) — it can
-    // no longer confirm what's cached. The pipeline skips its availability call
-    // entirely and treats RD candidates as assumed-available + flagged unverified.
-    this.verifiesCache = false;
-    this.apiKey = row.api_key ?? "";
-  }
-  async checkAvailability(candidates, signal) {
-    const out = /* @__PURE__ */ new Map();
-    if (!this.apiKey) return out;
-    const torrents = candidates.filter((c) => c.infoHash);
-    if (torrents.length === 0) return out;
-    const BATCH = 40;
-    for (let i = 0; i < torrents.length; i += BATCH) {
-      const slice = torrents.slice(i, i + BATCH);
-      const path4 = slice.map((c) => c.infoHash).join("/");
-      const data = await fetchAuthed(
-        `${RD_HOST}/torrents/instantAvailability/${path4}`,
-        this.apiKey,
-        { signal, label: "Real-Debrid" }
-      );
-      if (data === null) break;
-      for (const c of slice) {
-        const node = data[c.infoHash];
-        out.set(c.id, isCached(node));
-      }
-    }
-    return out;
-  }
-  async resolve(candidate, signal, hint) {
-    if (!this.apiKey || !candidate.infoHash) return null;
-    const addBody = new URLSearchParams({ magnet: magnetFromHash(candidate.infoHash) });
-    const added = await fetchAuthed(`${RD_HOST}/torrents/addMagnet`, this.apiKey, {
-      method: "POST",
-      body: addBody,
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      signal
-    });
-    if (!added?.id) return null;
-    await fetchAuthed(`${RD_HOST}/torrents/selectFiles/${added.id}`, this.apiKey, {
-      method: "POST",
-      body: new URLSearchParams({ files: "all" }),
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      signal
-    });
-    let info = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      info = await fetchAuthed(
-        `${RD_HOST}/torrents/info/${added.id}`,
-        this.apiKey,
-        { signal }
-      );
-      if (info?.status === "downloaded" && info.links?.length) break;
-      await sleep3(2e3);
-    }
-    if (!info?.links?.length) return null;
-    const videoFiles = info.files.map((f, i) => ({ ...f, _origIdx: i })).filter((f) => f.selected === 1);
-    if (videoFiles.length === 0) return null;
-    const pickable = videoFiles.map((f) => ({
-      id: f._origIdx,
-      // f.path is "/folder/Show.S01E05.mkv" — last segment is the filename.
-      name: f.path.split("/").pop() ?? f.path,
-      size: f.bytes
-    }));
-    const chosen = pickFileForEpisode(pickable, hint);
-    if (!chosen) return null;
-    const selectedIdx = videoFiles.findIndex((f) => f._origIdx === chosen.id);
-    if (selectedIdx < 0) return null;
-    const link = info.links[selectedIdx];
-    if (!link) return null;
-    const unrestricted = await fetchAuthed(
-      `${RD_HOST}/unrestrict/link`,
-      this.apiKey,
-      {
-        method: "POST",
-        body: new URLSearchParams({ link }),
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        signal
-      }
-    );
-    return unrestricted?.download ?? null;
-  }
-};
-function isCached(node) {
-  if (!node) return false;
-  if (Array.isArray(node)) return node.length > 0;
-  if (typeof node === "object") return Object.keys(node).length > 0;
-  return false;
+function pickTag(block, tag) {
+  const r = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, "i");
+  const m = block.match(r);
+  if (!m) return void 0;
+  return decodeEntities(m[1].replace(/^<!\[CDATA\[/, "").replace(/\]\]>$/, "").trim());
 }
-function sleep3(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+function decodeEntities(s) {
+  let out = s;
+  for (let i = 0; i < 2 && /&(?:[a-z]+|#\d+|#x[0-9a-f]+);/i.test(out); i++) {
+    out = out.replace(/&quot;/g, '"').replace(/&apos;|&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n))).replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16))).replace(/&amp;/g, "&");
+  }
+  return out;
+}
+function pickAttrs(block) {
+  const out = /* @__PURE__ */ new Map();
+  const r = /<(?:torznab|newznab):attr\s+name="([^"]+)"\s+value="([^"]*)"/g;
+  let m;
+  while ((m = r.exec(block)) !== null) {
+    out.set(m[1].toLowerCase(), m[2]);
+  }
+  return out;
+}
+function pickEnclosure(block) {
+  const m = /<enclosure\s+([^>]*?)\/?>/i.exec(block);
+  if (!m) return null;
+  const tag = m[1];
+  const url = decodeEntities(/\burl="([^"]*)"/i.exec(tag)?.[1] ?? "");
+  if (!url) return null;
+  const length = /\blength="([^"]*)"/i.exec(tag)?.[1];
+  const type = /\btype="([^"]*)"/i.exec(tag)?.[1];
+  return { url, length, type };
+}
+var BOOK_CATS = {
+  ebook: [7020, 7030],
+  audiobook: [3030],
+  any: [7020, 7030, 3030]
+};
+async function searchBookReleases(rows, query, kind, signal, book) {
+  const usenet = rows.filter((r) => r.enabled === 1 && r.url && (r.source_type === "newznab" || r.source_type === "nzbhydra"));
+  const perIndexer = await Promise.all(usenet.map(async (row) => {
+    const api = (params) => {
+      params.set("cat", BOOK_CATS[kind].join(","));
+      params.set("limit", "100");
+      params.set("extended", "1");
+      if (row.api_key) params.set("apikey", row.api_key);
+      return fetchText(`${row.url.replace(/\/$/, "")}/api?${params}`, { signal });
+    };
+    if (book?.title) {
+      const p = new URLSearchParams({ t: "book", title: book.title });
+      if (book.author) p.set("author", book.author);
+      const xml2 = await api(p);
+      const found = xml2 && !/<error\b/i.test(xml2) ? parseBookItems(xml2, row) : [];
+      if (found.length) return found;
+    }
+    const xml = await api(new URLSearchParams({ t: "search", q: query }));
+    return xml ? parseBookItems(xml, row) : [];
+  }));
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const r of perIndexer.flat()) {
+    const key = r.title.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+  return out;
+}
+function parseBookItems(xml, row) {
+  const out = [];
+  for (const m of xml.matchAll(/<item>([\s\S]*?)<\/item>/g)) {
+    const block = m[1];
+    const title = pickTag(block, "title") ?? "";
+    const enclosure = pickEnclosure(block);
+    const nzbUrl = enclosure?.url ?? pickTag(block, "link") ?? "";
+    if (!title || !nzbUrl) continue;
+    const attrs = pickAttrs(block);
+    const cats = [...block.matchAll(/<(?:newznab|torznab):attr\s+name="category"\s+value="(\d+)"/g)].map((c) => Number(c[1]));
+    const sizeStr = attrs.get("size") ?? enclosure?.length;
+    const pub = Date.parse(pickTag(block, "pubDate") ?? "");
+    const guid = pickTag(block, "guid") ?? nzbUrl;
+    out.push({
+      id: candidateId(row.id, guid),
+      title,
+      nzbUrl,
+      sizeBytes: sizeStr ? Number(sizeStr) || void 0 : void 0,
+      indexer: row.name,
+      kind: cats.some((c) => c >= 3e3 && c < 4e3) ? "audiobook" : "ebook",
+      publishedAt: Number.isFinite(pub) ? Math.floor(pub / 1e3) : void 0
+    });
+  }
+  return out;
 }
 
-// src/resolvers/torbox.ts
-init_base2();
-var TB_HOST = "https://api.torbox.app/v1/api";
-var TorBoxResolver = class {
-  constructor(row) {
-    this.row = row;
-    this.provider = "torbox";
-    this.accepts = ["torrent", "usenet"];
-    this.apiKey = row.api_key ?? "";
-  }
-  async checkAvailability(candidates, signal) {
-    const out = /* @__PURE__ */ new Map();
-    if (!this.apiKey) return out;
-    const torrents = candidates.filter((c) => c.infoHash);
-    if (torrents.length === 0) return out;
-    const BATCH = 75;
-    for (let i = 0; i < torrents.length; i += BATCH) {
-      const slice = torrents.slice(i, i + BATCH);
-      const params = new URLSearchParams();
-      for (const c of slice) params.append("hash", c.infoHash);
-      const data = await fetchAuthed(
-        `${TB_HOST}/torrents/checkcached?${params.toString()}&format=object`,
-        this.apiKey,
-        { signal }
+// src/store.ts
+init_host();
+var storage = () => getForgeHost().storage;
+var migrated = /* @__PURE__ */ new WeakMap();
+function migrateStorage() {
+  const db2 = storage();
+  let done = migrated.get(db2);
+  if (done) return done;
+  done = (async () => {
+    await migrate(db2, [
+      `CREATE TABLE IF NOT EXISTS sources (
+        id TEXT PRIMARY KEY,
+        source_type TEXT NOT NULL,
+        name TEXT NOT NULL,
+        url TEXT,
+        api_key TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        priority INTEGER NOT NULL DEFAULT 100,
+        config_json TEXT NOT NULL DEFAULT '{}',
+        last_checked_at INTEGER,
+        last_error TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
       );
-      const cached = data?.data ?? {};
-      for (const c of slice) out.set(c.id, !!cached[c.infoHash]);
-    }
-    return out;
-  }
-  async resolve(candidate, signal, hint) {
-    const r = await this.resolveDetailed(candidate, signal, hint);
-    return r && "url" in r ? r.url : null;
-  }
-  /**
-   * Like {@link resolve} but also returns the NAME of the file we picked. The
-   * adult library uses the name to reject dirty hashlist entries whose cached
-   * TorBox content turns out to be unrelated (e.g. a mainstream show) — the
-   * torrent's release name matched, but the actual file doesn't.
-   *
-   * For an UNCACHED torrent TorBox queues the download instead of failing; in
-   * that case this returns a {@link QueuedResolve} (state + progress) so the
-   * caller can tell the user "it's downloading" rather than "not found".
-   */
-  async resolveDetailed(candidate, signal, hint) {
-    if (!this.apiKey) return null;
-    if (candidate.infoHash) return this.resolveTorrent(candidate, signal, hint);
-    if (candidate.nzbId) {
-      const url = await this.resolveUsenet(candidate, signal, hint);
-      return url ? { url, name: candidate.rawTitle ?? "" } : null;
-    }
-    return null;
-  }
-  async resolveTorrent(candidate, signal, hint) {
-    const body = new FormData();
-    body.append("magnet", magnetFromHash(candidate.infoHash));
-    const created = await fetchAuthed(
-      `${TB_HOST}/torrents/createtorrent`,
-      this.apiKey,
-      { method: "POST", body, signal }
-    );
-    const id = created?.data?.torrent_id;
-    if (!id) return null;
-    const info = await pollForReady(
-      () => fetchAuthed(`${TB_HOST}/torrents/mylist?id=${id}&bypass_cache=true`, this.apiKey, { signal })
-    );
-    const files = info?.data?.files ?? [];
-    if (!files.length) {
-      const d = info?.data;
-      if (!d) return null;
-      const progress = typeof d.progress === "number" ? Math.round(d.progress * 100) : null;
-      return { queued: true, state: d.download_state ?? null, progress, seeds: d.seeds ?? null };
-    }
-    const chosen = pickFileForEpisode(files, hint);
-    if (!chosen) return null;
-    const dl = await fetchAuthed(
-      `${TB_HOST}/torrents/requestdl?token=${encodeURIComponent(this.apiKey)}&torrent_id=${id}&file_id=${chosen.id}`,
-      this.apiKey,
-      { signal }
-    );
-    return dl?.data ? { url: dl.data, name: chosen.name ?? "" } : null;
-  }
-  async resolveUsenet(candidate, signal, hint) {
-    const body = new FormData();
-    body.append("link", candidate.nzbId);
-    const created = await fetchAuthed(
-      `${TB_HOST}/usenet/createusenetdownload`,
-      this.apiKey,
-      { method: "POST", body, signal }
-    );
-    const id = created?.data?.usenet_id;
-    if (!id) return null;
-    const info = await pollForReady(
-      () => fetchAuthed(`${TB_HOST}/usenet/mylist?id=${id}&bypass_cache=true`, this.apiKey, { signal })
-    );
-    const files = info?.data?.files ?? [];
-    if (!files.length) return null;
-    const chosen = pickFileForEpisode(files, hint);
-    if (!chosen) return null;
-    const dl = await fetchAuthed(
-      `${TB_HOST}/usenet/requestdl?token=${encodeURIComponent(this.apiKey)}&usenet_id=${id}&file_id=${chosen.id}`,
-      this.apiKey,
-      { signal }
-    );
-    return dl?.data ?? null;
-  }
-};
-async function pollForReady(fn) {
-  let last = null;
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const info = await fn();
-    if (info?.data?.files?.length) return info;
-    if (info?.data) last = info;
-    await new Promise((r) => setTimeout(r, 1500));
-  }
-  return last;
+      CREATE TABLE IF NOT EXISTS accounts (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        api_key TEXT,
+        host TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        priority INTEGER NOT NULL DEFAULT 100,
+        config_json TEXT NOT NULL DEFAULT '{}',
+        premium_until INTEGER,
+        last_checked_at INTEGER,
+        last_error TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );`
+    ]);
+  })();
+  migrated.set(db2, done);
+  return done;
 }
-
-// src/resolvers/usenet.ts
-init_log();
+async function db() {
+  await migrateStorage();
+  return storage();
+}
+async function listStreamSources() {
+  return (await db()).all("SELECT * FROM sources ORDER BY priority, created_at");
+}
+async function getStreamSource(id) {
+  return (await db()).get("SELECT * FROM sources WHERE id = ?", [id]);
+}
+async function upsertStreamSource(input) {
+  await (await db()).run(
+    `INSERT INTO sources (id, source_type, name, url, api_key, enabled, priority, config_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       source_type=excluded.source_type, name=excluded.name, url=excluded.url,
+       api_key=excluded.api_key, enabled=excluded.enabled, priority=excluded.priority,
+       config_json=excluded.config_json`,
+    [input.id, input.sourceType, input.name, input.url ?? null, input.apiKey ?? null, input.enabled === false ? 0 : 1, input.priority ?? 100, JSON.stringify(input.config ?? {})]
+  );
+}
+async function deleteStreamSource(id) {
+  await (await db()).run("DELETE FROM sources WHERE id = ?", [id]);
+}
+async function setStreamSourceStatus(id, patch) {
+  await (await db()).run("UPDATE sources SET last_error = ?, last_checked_at = COALESCE(?, last_checked_at) WHERE id = ?", [
+    patch.lastError ?? null,
+    patch.lastCheckedAt ?? null,
+    id
+  ]);
+}
+async function listStreamAccounts(kind) {
+  const d = await db();
+  return kind ? d.all("SELECT * FROM accounts WHERE kind = ? ORDER BY priority, created_at", [kind]) : d.all("SELECT * FROM accounts ORDER BY kind, priority, created_at");
+}
+async function getStreamAccount(id) {
+  return (await db()).get("SELECT * FROM accounts WHERE id = ?", [id]);
+}
+async function upsertStreamAccount(input) {
+  await (await db()).run(
+    `INSERT INTO accounts (id, provider, kind, api_key, host, enabled, priority, config_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       provider=excluded.provider, kind=excluded.kind, api_key=excluded.api_key,
+       host=excluded.host, enabled=excluded.enabled, priority=excluded.priority,
+       config_json=excluded.config_json`,
+    [input.id, input.provider, input.kind, input.apiKey ?? null, input.host ?? null, input.enabled === false ? 0 : 1, input.priority ?? 100, JSON.stringify(input.config ?? {})]
+  );
+}
+async function setStreamAccountStatus(id, patch) {
+  await (await db()).run(
+    `UPDATE accounts SET premium_until = COALESCE(?, premium_until), last_error = ?, last_checked_at = COALESCE(?, last_checked_at) WHERE id = ?`,
+    [patch.premiumUntil ?? null, patch.lastError ?? null, patch.lastCheckedAt ?? null, id]
+  );
+}
+async function deleteStreamAccount(id) {
+  await (await db()).run("DELETE FROM accounts WHERE id = ?", [id]);
+}
 
 // src/usenet/service.ts
 init_host();
@@ -5604,9 +4971,9 @@ var VintReader = class {
 
 // src/usenet/media.ts
 var JUNK_EXT = /\.(par2|nfo|sfv|srr|nzb|txt|jpe?g|png|gif|url|exe|sample\.\w+)$/i;
-var VIDEO_EXT3 = /\.(mkv|mp4|m4v|avi|ts|m2ts|mov|webm|wmv|mpg|mpeg)$/i;
+var VIDEO_EXT2 = /\.(mkv|mp4|m4v|avi|ts|m2ts|mov|webm|wmv|mpg|mpeg)$/i;
 var BOOK_EXT = /\.(epub|pdf|cbz|m4b|m4a|mp3|aac|ogg|opus|flac)$/i;
-async function scanNzb(files, store, concurrency, wanted = VIDEO_EXT3) {
+async function scanNzb(files, store, concurrency, wanted = VIDEO_EXT2) {
   const problems = [];
   const candidates = files.map((file, index) => ({ file, index })).filter(({ file }) => !JUNK_EXT.test(file.name) && !/\.vol\d+\+\d+/i.test(file.name));
   const opened = await mapLimit(candidates, concurrency, async ({ file, index }) => {
@@ -5767,13 +5134,13 @@ var NntpConnection = class {
     this.closed = false;
   }
   async connect() {
-    const { host: host2, port, ssl } = this.cfg;
-    const socket = ssl ? tls.connect({ host: host2, port, servername: net.isIP(host2) ? void 0 : host2 }) : net.connect({ host: host2, port });
+    const { host: host3, port, ssl } = this.cfg;
+    const socket = ssl ? tls.connect({ host: host3, port, servername: net.isIP(host3) ? void 0 : host3 }) : net.connect({ host: host3, port });
     this.socket = socket;
     socket.setNoDelay(true);
     socket.on("data", (d) => this.onData(d));
-    socket.on("error", (e) => this.fail(new NntpError(`${host2}:${port} ${e.message}`)));
-    socket.on("close", () => this.fail(new NntpError(`${host2}:${port} connection closed`)));
+    socket.on("error", (e) => this.fail(new NntpError(`${host3}:${port} ${e.message}`)));
+    socket.on("close", () => this.fail(new NntpError(`${host3}:${port} connection closed`)));
     const greeting = await this.read(false);
     if (greeting.code !== 200 && greeting.code !== 201) {
       throw new NntpError(`unexpected greeting: ${greeting.line}`, greeting.code);
@@ -5820,7 +5187,7 @@ var NntpConnection = class {
   }
   read(multiline) {
     if (this.pending) return Promise.reject(new NntpError("command already in flight"));
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       const timeout = this.cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       const timer = setTimeout(() => {
         this.fail(new NntpError(`timed out after ${timeout} ms`));
@@ -5830,7 +5197,7 @@ var NntpConnection = class {
         multiline,
         resolve: (r) => {
           clearTimeout(timer);
-          resolve(r);
+          resolve2(r);
         },
         reject: (e) => {
           clearTimeout(timer);
@@ -5871,10 +5238,10 @@ var NntpConnection = class {
   }
   finish(body) {
     const p = this.pending;
-    const status = this.statusLine;
+    const status2 = this.statusLine;
     this.pending = null;
     this.statusLine = null;
-    p.resolve({ ...status, body });
+    p.resolve({ ...status2, body });
   }
   fail(err) {
     this.closed = true;
@@ -5959,14 +5326,14 @@ var NntpPool = class {
         throw err;
       }
     }
-    const c = await new Promise((resolve, reject) => {
+    const c = await new Promise((resolve2, reject) => {
       const onAbort = () => {
         this.waiters = this.waiters.filter((w) => w !== waiter);
         reject(new NntpError("aborted"));
       };
       const waiter = (conn) => {
         signal?.removeEventListener("abort", onAbort);
-        resolve(conn);
+        resolve2(conn);
       };
       if (signal?.aborted) return onAbort();
       signal?.addEventListener("abort", onAbort, { once: true });
@@ -6005,7 +5372,7 @@ function parseNzb(xml) {
   const fileRe = /<file\b([^>]*)>([\s\S]*?)<\/file>/gi;
   let m;
   while ((m = fileRe.exec(xml)) !== null) {
-    const subject = decodeEntities(/\bsubject="([^"]*)"/i.exec(m[1])?.[1] ?? "");
+    const subject = decodeEntities2(/\bsubject="([^"]*)"/i.exec(m[1])?.[1] ?? "");
     const inner = m[2];
     const groups = [...inner.matchAll(/<group>([\s\S]*?)<\/group>/gi)].map((g2) => g2[1].trim());
     const segments = [];
@@ -6013,7 +5380,7 @@ function parseNzb(xml) {
       const attrs = s[1];
       const number = Number(/\bnumber="(\d+)"/i.exec(attrs)?.[1] ?? 0);
       const bytes = Number(/\bbytes="(\d+)"/i.exec(attrs)?.[1] ?? 0);
-      const messageId = decodeEntities(s[2].trim()).replace(/^<|>$/g, "");
+      const messageId = decodeEntities2(s[2].trim()).replace(/^<|>$/g, "");
       if (messageId) segments.push({ number, bytes, messageId });
     }
     if (!segments.length) continue;
@@ -6048,7 +5415,7 @@ function indexFromSubject(subject) {
   const m = /[[(](\d+)\s*\/\s*\d+[\])]/.exec(subject);
   return m ? Number(m[1]) : null;
 }
-function decodeEntities(s) {
+function decodeEntities2(s) {
   return s.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n))).replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16))).replace(/&amp;/g, "&");
 }
 
@@ -6241,7 +5608,7 @@ function classifyFailure(message) {
 }
 
 // src/usenet/engine.ts
-var WANTED = { video: VIDEO_EXT3, book: BOOK_EXT };
+var WANTED = { video: VIDEO_EXT2, book: BOOK_EXT };
 var HEALTH_SAMPLE = 24;
 var SCREEN_SAMPLE = 12;
 var UsenetEngine = class {
@@ -6523,11 +5890,11 @@ async function handle(open, req, res) {
   for await (const chunk of file.stream(start, end, ac.signal)) {
     if (ac.signal.aborted) return;
     if (!res.write(chunk)) {
-      await new Promise((resolve) => {
+      await new Promise((resolve2) => {
         const done = () => {
           res.off("drain", done);
           res.off("close", done);
-          resolve();
+          resolve2();
         };
         res.on("drain", done);
         res.on("close", done);
@@ -6558,13 +5925,15 @@ function parseRange(header, size) {
 var DEFAULT_STREAM_PORT = 47810;
 async function readUsenetSettings(overrides) {
   if (!hasForgeHost()) return null;
-  const cfg = { ...await getForgeHost().getAddonConfig?.() ?? {} };
-  for (const [k, v] of Object.entries(overrides ?? {})) if (v.trim()) cfg[k] = v;
-  const host2 = (cfg.usenet_host ?? "").trim();
-  if (!host2) return null;
+  const saved = await getForgeHost().settings.get().catch(() => ({}));
+  const cfg = {};
+  for (const [k, v] of Object.entries(saved)) if (v !== void 0 && v !== null) cfg[k] = String(v);
+  for (const [k, v] of Object.entries(overrides ?? {})) if (v !== void 0 && v !== null && String(v).trim()) cfg[k] = String(v);
+  const host3 = (cfg.usenet_host ?? "").trim();
+  if (!host3) return null;
   const ssl = !/^(0|false|no|off)$/i.test((cfg.usenet_ssl ?? "true").trim());
   return {
-    host: host2,
+    host: host3,
     port: positive(cfg.usenet_port) ?? (ssl ? 563 : 119),
     ssl,
     username: (cfg.usenet_username ?? "").trim(),
@@ -6602,7 +5971,7 @@ async function ensureServer(port) {
   shared.server = null;
   if (old) await new Promise((r) => old.server.close(() => r()));
   const srv = createStreamServer((jobId, idx) => shared.open ? shared.open(jobId, idx) : Promise.resolve(null));
-  const ready = new Promise((resolve, reject) => {
+  const ready = new Promise((resolve2, reject) => {
     srv.once("error", (err) => {
       logger.error("streams", `Usenet stream server could not listen on 127.0.0.1:${port}: ${err.message}`, err);
       if (shared.server?.server === srv) shared.server = null;
@@ -6610,7 +5979,7 @@ async function ensureServer(port) {
     });
     srv.listen(port, "127.0.0.1", () => {
       logger.info("streams", `Usenet stream server listening on 127.0.0.1:${port}`);
-      resolve();
+      resolve2();
     });
   });
   shared.server = { port, server: srv, ready };
@@ -6628,7 +5997,7 @@ async function prepareBookFiles(nzbUrl, signal) {
 }
 async function testUsenetLogin(overrides) {
   const s = await readUsenetSettings(overrides);
-  if (!s) return { ok: false, message: "Set the Usenet Provider host + login under API Keys" };
+  if (!s) return { ok: false, message: "Set the usenet provider's host and login first" };
   const conn = new NntpConnection({ ...s, timeoutMs: 1e4 });
   try {
     await conn.connect();
@@ -6640,15 +6009,942 @@ async function testUsenetLogin(overrides) {
   }
 }
 function jobsDir() {
-  const base = hasForgeHost() && getForgeHost().dataDir || path3.join(os.tmpdir(), "zero");
-  return path3.join(base, "addons", "forge", "usenet");
+  return path3.join(hasForgeHost() && getForgeHost().dataDir || path3.join(os.tmpdir(), "zero-forge"), "usenet");
 }
 function positive(v) {
   const n = Number((v ?? "").trim());
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : void 0;
 }
 
+// src/pipeline.ts
+import { createHash as createHash4 } from "node:crypto";
+init_log();
+
+// src/filter.ts
+function applyFilters(streams2, prefs) {
+  return streams2.filter((s) => matchesPrefs(s, prefs));
+}
+function applySeasonEpisodeGate(streams2, query) {
+  if (query.kind === "movie") {
+    return streams2.filter(
+      (s) => s.seasons.length === 0 && s.episodes.length === 0
+    );
+  }
+  if (query.kind !== "series") return streams2;
+  const wantedSeason = query.season;
+  const wantedEpisode = query.episode;
+  if (!wantedSeason && !wantedEpisode) return streams2;
+  return streams2.filter((s) => {
+    const hasSeasons = s.seasons.length > 0;
+    const hasEpisodes = s.episodes.length > 0;
+    if (!hasSeasons && !hasEpisodes) return true;
+    if (s.seasonPack && wantedSeason) {
+      return s.seasons.includes(wantedSeason);
+    }
+    if (hasEpisodes && wantedEpisode) {
+      if (!s.episodes.includes(wantedEpisode)) return false;
+      if (hasSeasons && wantedSeason && !s.seasons.includes(wantedSeason)) {
+        return false;
+      }
+      return true;
+    }
+    if (hasSeasons && wantedSeason) return s.seasons.includes(wantedSeason);
+    return true;
+  });
+}
+function matchesPrefs(stream, prefs) {
+  if (prefs.resolutions.length > 0 && !prefs.resolutions.includes(stream.resolution)) {
+    return false;
+  }
+  if (prefs.codecs.length > 0) {
+    if (!stream.codec || !prefs.codecs.includes(stream.codec)) return false;
+  }
+  if (!prefs.hdrAllowed && stream.hdrFlags > 0) return false;
+  if (stream.sizeBytes != null) {
+    const mb = stream.sizeBytes / (1024 * 1024);
+    if (prefs.sizeMinMb != null && mb < prefs.sizeMinMb) return false;
+    if (prefs.sizeMaxMb != null && mb > prefs.sizeMaxMb) return false;
+  }
+  if (prefs.excludedLanguages.length > 0 && stream.languages.length > 0) {
+    const allExcluded = stream.languages.every((l) => prefs.excludedLanguages.includes(l));
+    if (allExcluded) return false;
+  }
+  if (prefs.languages.length > 0 && stream.languages.length > 0) {
+    const hit = stream.languages.some((l) => prefs.languages.includes(l) || l === "multi" || l === "dual");
+    if (!hit) return false;
+  }
+  if (prefs.minSeeders != null && stream.seeders != null) {
+    if (stream.seeders < prefs.minSeeders) return false;
+  }
+  return true;
+}
+function applyAvailabilityFilters(streams2, prefs) {
+  if (!prefs.excludeUncached) return streams2;
+  return streams2.filter((s) => s.cachedOnDebrid || s.assumedCached);
+}
+function parseStreamPrefs(row) {
+  const safeJson = (s, fallback) => {
+    try {
+      return JSON.parse(s);
+    } catch {
+      return fallback;
+    }
+  };
+  const CODEC_ALIASES = {
+    hevc: "h265",
+    x265: "h265",
+    avc: "h264",
+    x264: "h264"
+  };
+  const VALID_CODECS = /* @__PURE__ */ new Set(["h264", "h265", "av1", "vp9", "mpeg2"]);
+  const normalizeCodecs = (raw) => raw.map((c) => CODEC_ALIASES[c.toLowerCase()] ?? c).filter((c) => VALID_CODECS.has(c));
+  const scope = row.binge_pin_scope === "series" ? "series" : "season";
+  return {
+    resolutions: safeJson(row.resolutions_json, []),
+    codecs: normalizeCodecs(safeJson(row.codecs_json, [])),
+    hdrAllowed: row.hdr_allowed === 1,
+    sizeMinMb: row.size_min_mb,
+    sizeMaxMb: row.size_max_mb,
+    languages: safeJson(row.languages_json, []),
+    excludedLanguages: safeJson(row.excluded_languages_json ?? "[]", []),
+    sortOrder: safeJson(row.sort_order_json, ["resolution", "cached", "seeders", "size"]),
+    bingePinReleaseGroup: row.binge_pin_release_group === 1,
+    minSeeders: row.min_seeders,
+    excludeUncached: row.exclude_uncached === 1,
+    bingeOnlySeasonPacks: (row.binge_only_season_packs ?? 0) === 1,
+    bingeStrictReleaseGroup: (row.binge_strict_release_group ?? 0) === 1,
+    bingePinScope: scope
+  };
+}
+
+// src/pipeline.ts
+init_parser2();
+
+// src/resolvers/alldebrid.ts
+init_base2();
+var AD_HOST = "https://api.alldebrid.com/v4";
+var AllDebridResolver = class {
+  constructor(row) {
+    this.row = row;
+    this.provider = "alldebrid";
+    this.accepts = ["torrent"];
+    this.apiKey = row.api_key ?? "";
+  }
+  async checkAvailability(candidates, signal) {
+    const out = /* @__PURE__ */ new Map();
+    if (!this.apiKey) return out;
+    const hashes = candidates.filter((c) => c.infoHash);
+    if (hashes.length === 0) return out;
+    const BATCH = 50;
+    for (let i = 0; i < hashes.length; i += BATCH) {
+      const slice = hashes.slice(i, i + BATCH);
+      const params = new URLSearchParams();
+      params.set("agent", "zero");
+      for (const c of slice) params.append("magnets[]", c.infoHash);
+      const data = await fetchAuthed(
+        `${AD_HOST}/magnet/instant?${params.toString()}`,
+        this.apiKey,
+        { headerScheme: "query", queryKeyName: "apikey", signal }
+      );
+      const byHash = /* @__PURE__ */ new Map();
+      for (const m of data?.data?.magnets ?? []) {
+        if (m.hash) byHash.set(m.hash.toLowerCase(), m.instant === true);
+      }
+      for (const c of slice) out.set(c.id, byHash.get(c.infoHash) ?? false);
+    }
+    return out;
+  }
+  async resolve(candidate2, signal, hint) {
+    if (!this.apiKey || !candidate2.infoHash) return null;
+    const uploadBody = new URLSearchParams();
+    uploadBody.set("agent", "zero");
+    uploadBody.append("magnets[]", magnetFromHash(candidate2.infoHash));
+    const uploaded = await fetchAuthed(
+      `${AD_HOST}/magnet/upload?apikey=${encodeURIComponent(this.apiKey)}`,
+      this.apiKey,
+      {
+        method: "POST",
+        headerScheme: "raw",
+        // already in URL
+        body: uploadBody,
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        signal
+      }
+    );
+    const mag = uploaded?.data?.magnets?.[0];
+    if (!mag?.id) return null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const status2 = await fetchAuthed(
+        `${AD_HOST}/magnet/status?id=${mag.id}&apikey=${encodeURIComponent(this.apiKey)}`,
+        this.apiKey,
+        { headerScheme: "raw", signal }
+      );
+      const m = status2?.data?.magnets;
+      if (m?.links?.length) {
+        const { pickFileForEpisode: pickFileForEpisode2 } = await Promise.resolve().then(() => (init_base2(), base_exports));
+        const pickable = m.links.map((l, i) => ({ id: i, name: l.filename, size: l.size }));
+        const chosen = pickFileForEpisode2(pickable, hint) ?? pickable[0];
+        const link = m.links[chosen.id];
+        if (!link) return null;
+        const unlocked = await fetchAuthed(
+          `${AD_HOST}/link/unlock?link=${encodeURIComponent(link.link)}&apikey=${encodeURIComponent(this.apiKey)}`,
+          this.apiKey,
+          { headerScheme: "raw", signal }
+        );
+        return unlocked?.data?.link ?? link.link;
+      }
+      await sleep(2e3);
+    }
+    return null;
+  }
+};
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// src/resolvers/nzbdav.ts
+init_log();
+init_base2();
+init_base();
+var DEFAULT_POLL_MS = 2e3;
+var DEFAULT_MAX_WAIT_MS = 9e4;
+var DEFAULT_CONTENT_PREFIX = "/content";
+var NzbDavResolver = class {
+  constructor(row) {
+    this.provider = "nzbdav";
+    this.accepts = ["usenet"];
+    this.host = (row.host ?? "").replace(/\/$/, "");
+    this.apiKey = row.api_key ?? "";
+    const cfg = parseConfig(row.config_json);
+    this.publicHost = (cfg.publicHost ?? this.host).replace(/\/$/, "");
+    this.webdavUser = cfg.webdavUser;
+    this.webdavPassword = cfg.webdavPassword;
+    this.pollIntervalMs = cfg.pollIntervalMs ?? DEFAULT_POLL_MS;
+    this.maxWaitMs = cfg.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
+    this.contentPathPrefix = cfg.contentPathPrefix ?? DEFAULT_CONTENT_PREFIX;
+  }
+  async checkAvailability(candidates, _signal) {
+    const out = /* @__PURE__ */ new Map();
+    for (const c of candidates) if (c.nzbId) out.set(c.id, true);
+    return out;
+  }
+  async resolve(candidate2, signal, hint) {
+    if (!this.host || !candidate2.nzbId) return null;
+    const category = pickCategory(hint, candidate2);
+    const jobLabel = sanitiseJobLabel(candidate2.rawTitle || candidate2.description || candidate2.id);
+    const added = await this.sabRequest({
+      mode: "addurl",
+      name: candidate2.nzbId,
+      cat: category,
+      nzbname: jobLabel,
+      output: "json"
+    }, signal);
+    if (!added?.status || !added.nzo_ids?.length) return null;
+    const nzoId = added.nzo_ids[0];
+    const slot = await this.waitForCompletion(nzoId, signal);
+    if (!slot) return null;
+    const folderName = basename(slot.storage ?? slot.name ?? jobLabel);
+    const jobCategory = slot.category ?? category;
+    const folderUrl = `${this.host}${this.contentPathPrefix}/${encodeSegment(jobCategory)}/${encodeSegment(folderName)}`;
+    const files = await this.listWebdavFiles(folderUrl, signal);
+    if (!files.length) return null;
+    const chosen = pickFileForEpisode(
+      files.map((f, i) => ({ id: i, name: f.name, size: f.size })),
+      hint
+    );
+    if (!chosen) return null;
+    const chosenFile = files[chosen.id];
+    const publicFolder = `${this.publicHost}${this.contentPathPrefix}/${encodeSegment(jobCategory)}/${encodeSegment(folderName)}`;
+    return embedBasicAuth(`${publicFolder}/${encodeSegment(chosenFile.name)}`, this.webdavUser, this.webdavPassword);
+  }
+  async sabRequest(params, signal) {
+    const sp = new URLSearchParams({ ...params, apikey: this.apiKey });
+    const url = `${this.host}${this.sabApiPath()}?${sp.toString()}`;
+    try {
+      const res = await fetch(url, {
+        headers: { "x-api-key": this.apiKey },
+        signal
+      });
+      if (!res.ok) {
+        const body = (await res.text().catch(() => "")).slice(0, 200).replace(/\s+/g, " ").trim();
+        const hint = res.status === 401 || res.status === 403 ? " \u2014 check the API key" : "";
+        logger.warn(
+          "streams",
+          `Usenet ${this.host} (SABnzbd mode=${params.mode ?? "?"}) \u2192 HTTP ${res.status} ${res.statusText}${hint} on ${redactUrl(url)}` + (body ? ` \xB7 ${body}` : "")
+        );
+        return null;
+      }
+      return await res.json();
+    } catch (err) {
+      logger.warn("streams", `Usenet ${this.host} (SABnzbd mode=${params.mode ?? "?"}) request failed (${describeFetchFailure(err)})`);
+      return null;
+    }
+  }
+  /** Override point so AltMount can swap to its own API path. */
+  sabApiPath() {
+    return "/api";
+  }
+  async waitForCompletion(nzoId, signal) {
+    const deadline = Date.now() + this.maxWaitMs;
+    while (Date.now() < deadline) {
+      if (signal?.aborted) return null;
+      const history = await this.sabRequest({
+        mode: "history",
+        nzo_ids: nzoId,
+        output: "json"
+      }, signal);
+      const slot = history?.history?.slots?.find((s) => s.nzo_id === nzoId);
+      if (slot?.status?.toLowerCase() === "completed") return slot;
+      if (slot?.status?.toLowerCase() === "failed") return null;
+      await sleep2(this.pollIntervalMs, signal);
+    }
+    return null;
+  }
+  async listWebdavFiles(folderUrl, signal) {
+    const headers = {
+      Depth: "infinity",
+      "Content-Type": "application/xml"
+    };
+    const basic = basicAuthHeader(this.webdavUser, this.webdavPassword);
+    if (basic) headers.Authorization = basic;
+    try {
+      const res = await fetch(folderUrl, { method: "PROPFIND", headers, signal });
+      if (!res.ok) {
+        logger.warn("streams", `Usenet ${this.host} WebDAV PROPFIND \u2192 HTTP ${res.status} ${res.statusText} on ${redactUrl(folderUrl)}`);
+        return [];
+      }
+      const xml = await res.text();
+      return parsePropfindFiles(xml, folderUrl);
+    } catch (err) {
+      logger.warn("streams", `Usenet ${this.host} WebDAV PROPFIND failed (${describeFetchFailure(err)}) on ${redactUrl(folderUrl)}`);
+      return [];
+    }
+  }
+};
+function parseConfig(raw) {
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+function pickCategory(hint, c) {
+  if (hint?.season != null || hint?.episode != null) return "TV";
+  const title = (c.rawTitle || c.description || "").toLowerCase();
+  return /s\d{2}e\d{2}|season|episode/.test(title) ? "TV" : "Movies";
+}
+function sanitiseJobLabel(s) {
+  const cleaned = s.replace(/[\u0000-\u001F\u007F]+/g, " ").replace(/[^\x20-\x7E]/g, "").replace(/[/\\]/g, "_").replace(/\s+/g, " ").trim().slice(0, 240);
+  return cleaned || "zero-nzb";
+}
+function basename(p) {
+  const parts = p.replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? p;
+}
+function encodeSegment(s) {
+  return s.split("/").map((p) => encodeURIComponent(p)).join("/");
+}
+function basicAuthHeader(user, pass) {
+  if (!user || !pass) return null;
+  return `Basic ${Buffer.from(`${user}:${pass}`).toString("base64")}`;
+}
+function embedBasicAuth(url, user, pass) {
+  if (!user || !pass) return url;
+  return url.replace(/^(https?:\/\/)/i, (m) => `${m}${encodeURIComponent(user)}:${encodeURIComponent(pass)}@`);
+}
+async function sleep2(ms, signal) {
+  await new Promise((resolve2) => {
+    const t = setTimeout(resolve2, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(t);
+      resolve2();
+    }, { once: true });
+  });
+}
+var VIDEO_EXT3 = /\.(mkv|mp4|avi|m4v|ts|webm|mov|m2ts)$/i;
+function parsePropfindFiles(xml, baseUrl) {
+  const stripped = xml.replace(/<\/?[a-z0-9]+:/gi, (m2) => m2.replace(/[a-z0-9]+:/i, ""));
+  const items = [];
+  const responseRe = /<response>([\s\S]*?)<\/response>/gi;
+  let m;
+  const baseHrefPath = (() => {
+    try {
+      return new URL(baseUrl).pathname.replace(/\/$/, "");
+    } catch {
+      return "";
+    }
+  })();
+  while ((m = responseRe.exec(stripped)) !== null) {
+    const block = m[1];
+    const href = /<href>([\s\S]*?)<\/href>/i.exec(block)?.[1]?.trim();
+    if (!href) continue;
+    const isCollection = /<resourcetype>[\s\S]*?<collection\s*\/?>[\s\S]*?<\/resourcetype>/i.test(block);
+    if (isCollection) continue;
+    const lengthStr = /<getcontentlength>([\s\S]*?)<\/getcontentlength>/i.exec(block)?.[1]?.trim();
+    const size = lengthStr ? parseInt(lengthStr, 10) || 0 : 0;
+    let hrefPath;
+    try {
+      hrefPath = new URL(href, baseUrl).pathname;
+    } catch {
+      hrefPath = href;
+    }
+    if (baseHrefPath && hrefPath.startsWith(baseHrefPath)) {
+      hrefPath = hrefPath.slice(baseHrefPath.length);
+    }
+    const name = decodeURIComponent(basename(hrefPath));
+    if (!name) continue;
+    if (!VIDEO_EXT3.test(name) && size < 50 * 1024 * 1024) continue;
+    items.push({ name, size });
+  }
+  return items;
+}
+
+// src/resolvers/altmount.ts
+var AltMountResolver = class extends NzbDavResolver {
+  constructor(row) {
+    let cfg = {};
+    try {
+      cfg = JSON.parse(row.config_json || "{}");
+    } catch {
+    }
+    if (cfg.contentPathPrefix == null) cfg.contentPathPrefix = "/webdav";
+    super({ ...row, config_json: JSON.stringify(cfg) });
+    this.provider = "altmount";
+  }
+  sabApiPath() {
+    return "/sabnzbd/api";
+  }
+};
+
+// src/resolvers/debridlink.ts
+init_base2();
+var DL_HOST = "https://debrid-link.com/api/v2";
+var DebridLinkResolver = class {
+  constructor(row) {
+    this.row = row;
+    this.provider = "debridlink";
+    this.accepts = ["torrent"];
+    this.apiKey = row.api_key ?? "";
+  }
+  async checkAvailability(candidates, signal) {
+    const out = /* @__PURE__ */ new Map();
+    if (!this.apiKey) return out;
+    const torrents = candidates.filter((c) => c.infoHash);
+    if (torrents.length === 0) return out;
+    const BATCH = 25;
+    for (let i = 0; i < torrents.length; i += BATCH) {
+      const slice = torrents.slice(i, i + BATCH);
+      const params = new URLSearchParams();
+      params.set("url", slice.map((c) => magnetFromHash(c.infoHash)).join(","));
+      const data = await fetchAuthed(
+        `${DL_HOST}/seedbox/cached?${params.toString()}`,
+        this.apiKey,
+        { signal }
+      );
+      const byHash = data?.value ?? {};
+      for (const c of slice) out.set(c.id, byHash[c.infoHash] === true);
+    }
+    return out;
+  }
+  async resolve(candidate2, signal, hint) {
+    if (!this.apiKey || !candidate2.infoHash) return null;
+    const added = await fetchAuthed(
+      `${DL_HOST}/seedbox/add`,
+      this.apiKey,
+      {
+        method: "POST",
+        body: new URLSearchParams({ url: magnetFromHash(candidate2.infoHash) }),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        signal
+      }
+    );
+    const id = added?.value?.id;
+    if (!id) return null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const list2 = await fetchAuthed(
+        `${DL_HOST}/seedbox/list?ids=${id}`,
+        this.apiKey,
+        { signal }
+      );
+      const files = list2?.value?.[0]?.files ?? [];
+      if (files.length) {
+        const { pickFileForEpisode: pickFileForEpisode2 } = await Promise.resolve().then(() => (init_base2(), base_exports));
+        const pickable = files.map((f, i) => ({ id: i, name: f.name, size: f.size }));
+        const chosen = pickFileForEpisode2(pickable, hint);
+        if (chosen) {
+          const file = files[chosen.id];
+          if (file?.downloadUrl) return file.downloadUrl;
+        }
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    return null;
+  }
+};
+
+// src/resolvers/easydebrid.ts
+init_base2();
+var ED_HOST = "https://easydebrid.com/api/v1";
+var EasyDebridResolver = class {
+  constructor(row) {
+    this.row = row;
+    this.provider = "easydebrid";
+    this.accepts = ["torrent"];
+    this.apiKey = row.api_key ?? "";
+  }
+  async checkAvailability(candidates, signal) {
+    const out = /* @__PURE__ */ new Map();
+    if (!this.apiKey) return out;
+    const torrents = candidates.filter((c) => c.infoHash);
+    if (torrents.length === 0) return out;
+    const BATCH = 50;
+    for (let i = 0; i < torrents.length; i += BATCH) {
+      const slice = torrents.slice(i, i + BATCH);
+      const data = await fetchAuthed(
+        `${ED_HOST}/link/lookup`,
+        this.apiKey,
+        {
+          method: "POST",
+          body: JSON.stringify({ urls: slice.map((c) => magnetFromHash(c.infoHash)) }),
+          headers: { "Content-Type": "application/json" },
+          signal
+        }
+      );
+      const cached = data?.cached ?? [];
+      slice.forEach((c, idx) => out.set(c.id, cached[idx] === true));
+    }
+    return out;
+  }
+  async resolve(candidate2, signal, hint) {
+    if (!this.apiKey || !candidate2.infoHash) return null;
+    const data = await fetchAuthed(
+      `${ED_HOST}/link/generate`,
+      this.apiKey,
+      {
+        method: "POST",
+        body: JSON.stringify({ url: magnetFromHash(candidate2.infoHash) }),
+        headers: { "Content-Type": "application/json" },
+        signal
+      }
+    );
+    if (!data?.files?.length) return null;
+    const { pickFileForEpisode: pickFileForEpisode2 } = await Promise.resolve().then(() => (init_base2(), base_exports));
+    const pickable = data.files.map((f, i) => ({ id: i, name: f.name, size: f.size }));
+    const chosen = pickFileForEpisode2(pickable, hint);
+    if (!chosen) return null;
+    return data.files[chosen.id]?.url ?? null;
+  }
+};
+
+// src/resolvers/offcloud.ts
+init_base2();
+var OC_HOST = "https://offcloud.com/api";
+var OffcloudResolver = class {
+  constructor(row) {
+    this.row = row;
+    this.provider = "offcloud";
+    this.accepts = ["torrent"];
+    this.apiKey = row.api_key ?? "";
+  }
+  async checkAvailability(candidates, signal) {
+    const out = /* @__PURE__ */ new Map();
+    if (!this.apiKey) return out;
+    const torrents = candidates.filter((c) => c.infoHash);
+    if (torrents.length === 0) return out;
+    const BATCH = 50;
+    for (let i = 0; i < torrents.length; i += BATCH) {
+      const slice = torrents.slice(i, i + BATCH);
+      const data = await fetchAuthed(
+        `${OC_HOST}/cache?apiKey=${encodeURIComponent(this.apiKey)}`,
+        this.apiKey,
+        {
+          method: "POST",
+          headerScheme: "raw",
+          body: JSON.stringify({ hashes: slice.map((c) => c.infoHash) }),
+          headers: { "Content-Type": "application/json" },
+          signal
+        }
+      );
+      const cached = new Set((data?.cachedItems ?? []).map((h) => h.toLowerCase()));
+      for (const c of slice) out.set(c.id, cached.has(c.infoHash));
+    }
+    return out;
+  }
+  async resolve(candidate2, signal, hint) {
+    if (!this.apiKey || !candidate2.infoHash) return null;
+    const added = await fetchAuthed(
+      `${OC_HOST}/cloud?apiKey=${encodeURIComponent(this.apiKey)}`,
+      this.apiKey,
+      {
+        method: "POST",
+        headerScheme: "raw",
+        body: JSON.stringify({ url: magnetFromHash(candidate2.infoHash) }),
+        headers: { "Content-Type": "application/json" },
+        signal
+      }
+    );
+    if (added?.isDirectLink && added.url) return added.url;
+    const id = added?.requestId;
+    if (!id) return null;
+    const explored = await fetchAuthed(
+      `${OC_HOST}/cloud/explore/${id}?apiKey=${encodeURIComponent(this.apiKey)}`,
+      this.apiKey,
+      { headerScheme: "raw", signal }
+    );
+    if (!Array.isArray(explored) || explored.length === 0) return null;
+    if (hint?.episode || hint?.season) {
+      const { parseSeasonEpisode: parseSeasonEpisode2 } = await Promise.resolve().then(() => (init_parser2(), parser_exports));
+      const match = explored.find((url) => {
+        const name = decodeURIComponent(url.split("/").pop() ?? "");
+        const p = parseSeasonEpisode2(name);
+        if (hint.season && p.seasons.length > 0 && !p.seasons.includes(hint.season)) return false;
+        if (hint.episode && !p.episodes.includes(hint.episode)) return false;
+        return true;
+      });
+      if (match) return match;
+    }
+    const biggest = [...explored].sort((a, b) => b.length - a.length)[0];
+    return biggest ?? null;
+  }
+};
+
+// src/resolvers/premiumize.ts
+init_base2();
+var PM_HOST = "https://www.premiumize.me/api";
+var PremiumizeResolver = class {
+  constructor(row) {
+    this.row = row;
+    this.provider = "premiumize";
+    this.accepts = ["torrent"];
+    this.apiKey = row.api_key ?? "";
+  }
+  async checkAvailability(candidates, signal) {
+    const out = /* @__PURE__ */ new Map();
+    if (!this.apiKey) return out;
+    const torrents = candidates.filter((c) => c.infoHash);
+    if (torrents.length === 0) return out;
+    const BATCH = 50;
+    for (let i = 0; i < torrents.length; i += BATCH) {
+      const slice = torrents.slice(i, i + BATCH);
+      const params = new URLSearchParams();
+      params.set("apikey", this.apiKey);
+      for (const c of slice) params.append("items[]", c.infoHash);
+      const data = await fetchAuthed(
+        `${PM_HOST}/cache/check?${params.toString()}`,
+        this.apiKey,
+        { headerScheme: "raw", method: "POST", signal }
+      );
+      const arr = data?.response ?? [];
+      slice.forEach((c, idx) => out.set(c.id, arr[idx] === true));
+    }
+    return out;
+  }
+  async resolve(candidate2, signal, hint) {
+    if (!this.apiKey || !candidate2.infoHash) return null;
+    const params = new URLSearchParams();
+    params.set("apikey", this.apiKey);
+    params.set("src", magnetFromHash(candidate2.infoHash));
+    const data = await fetchAuthed(
+      `${PM_HOST}/transfer/directdl`,
+      this.apiKey,
+      {
+        method: "POST",
+        body: params,
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        headerScheme: "raw",
+        signal
+      }
+    );
+    if (!data?.content?.length) return null;
+    const { pickFileForEpisode: pickFileForEpisode2 } = await Promise.resolve().then(() => (init_base2(), base_exports));
+    const pickable = data.content.map((c, i) => ({
+      id: i,
+      name: c.path.split("/").pop() ?? c.path,
+      size: c.size
+    }));
+    const chosen = pickFileForEpisode2(pickable, hint);
+    if (!chosen) return null;
+    const file = data.content[chosen.id];
+    return file?.stream_link ?? file?.link ?? null;
+  }
+};
+
+// src/resolvers/putio.ts
+init_base2();
+var PUTIO_HOST = "https://api.put.io/v2";
+var PutioResolver = class {
+  constructor(row) {
+    this.row = row;
+    this.provider = "putio";
+    this.accepts = ["torrent"];
+    this.apiKey = row.api_key ?? "";
+  }
+  async checkAvailability(candidates, _signal) {
+    const out = /* @__PURE__ */ new Map();
+    for (const c of candidates) if (c.infoHash) out.set(c.id, false);
+    return out;
+  }
+  // hint currently ignored — Put.io doesn't expose a per-file picker in
+  // the v2 transfers flow; the returned file_id is the parent folder if
+  // the torrent contains multiple files. Walking /files/{id}/children to
+  // pick by S×E is a follow-up; for now Put.io continues to serve the
+  // root file as the prior code did.
+  async resolve(candidate2, signal, _hint) {
+    if (!this.apiKey || !candidate2.infoHash) return null;
+    const body = new URLSearchParams({
+      url: magnetFromHash(candidate2.infoHash),
+      save_parent_id: "0"
+    });
+    const added = await fetchAuthed(
+      `${PUTIO_HOST}/transfers/add`,
+      this.apiKey,
+      {
+        method: "POST",
+        body,
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        signal
+      }
+    );
+    const id = added?.transfer?.id;
+    if (!id) return null;
+    let fileId = added.transfer.file_id;
+    if (!fileId) {
+      for (let attempt = 0; attempt < 4 && !fileId; attempt++) {
+        await new Promise((r) => setTimeout(r, 2e3));
+        const status2 = await fetchAuthed(
+          `${PUTIO_HOST}/transfers/${id}`,
+          this.apiKey,
+          { signal }
+        );
+        fileId = status2?.transfer?.file_id;
+      }
+    }
+    if (!fileId) return null;
+    return `${PUTIO_HOST}/files/${fileId}/download?oauth_token=${encodeURIComponent(this.apiKey)}`;
+  }
+};
+
+// src/resolvers/realdebrid.ts
+init_base2();
+var RD_HOST = "https://api.real-debrid.com/rest/1.0";
+var RealDebridResolver = class {
+  constructor(row) {
+    this.row = row;
+    this.provider = "realdebrid";
+    this.accepts = ["torrent"];
+    // RD retired /torrents/instantAvailability (403 disabled_endpoint) — it can
+    // no longer confirm what's cached. The pipeline skips its availability call
+    // entirely and treats RD candidates as assumed-available + flagged unverified.
+    this.verifiesCache = false;
+    this.apiKey = row.api_key ?? "";
+  }
+  async checkAvailability(candidates, signal) {
+    const out = /* @__PURE__ */ new Map();
+    if (!this.apiKey) return out;
+    const torrents = candidates.filter((c) => c.infoHash);
+    if (torrents.length === 0) return out;
+    const BATCH = 40;
+    for (let i = 0; i < torrents.length; i += BATCH) {
+      const slice = torrents.slice(i, i + BATCH);
+      const path5 = slice.map((c) => c.infoHash).join("/");
+      const data = await fetchAuthed(
+        `${RD_HOST}/torrents/instantAvailability/${path5}`,
+        this.apiKey,
+        { signal, label: "Real-Debrid" }
+      );
+      if (data === null) break;
+      for (const c of slice) {
+        const node = data[c.infoHash];
+        out.set(c.id, isCached(node));
+      }
+    }
+    return out;
+  }
+  async resolve(candidate2, signal, hint) {
+    if (!this.apiKey || !candidate2.infoHash) return null;
+    const addBody = new URLSearchParams({ magnet: magnetFromHash(candidate2.infoHash) });
+    const added = await fetchAuthed(`${RD_HOST}/torrents/addMagnet`, this.apiKey, {
+      method: "POST",
+      body: addBody,
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      signal
+    });
+    if (!added?.id) return null;
+    await fetchAuthed(`${RD_HOST}/torrents/selectFiles/${added.id}`, this.apiKey, {
+      method: "POST",
+      body: new URLSearchParams({ files: "all" }),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      signal
+    });
+    let info = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      info = await fetchAuthed(
+        `${RD_HOST}/torrents/info/${added.id}`,
+        this.apiKey,
+        { signal }
+      );
+      if (info?.status === "downloaded" && info.links?.length) break;
+      await sleep3(2e3);
+    }
+    if (!info?.links?.length) return null;
+    const videoFiles = info.files.map((f, i) => ({ ...f, _origIdx: i })).filter((f) => f.selected === 1);
+    if (videoFiles.length === 0) return null;
+    const pickable = videoFiles.map((f) => ({
+      id: f._origIdx,
+      // f.path is "/folder/Show.S01E05.mkv" — last segment is the filename.
+      name: f.path.split("/").pop() ?? f.path,
+      size: f.bytes
+    }));
+    const chosen = pickFileForEpisode(pickable, hint);
+    if (!chosen) return null;
+    const selectedIdx = videoFiles.findIndex((f) => f._origIdx === chosen.id);
+    if (selectedIdx < 0) return null;
+    const link = info.links[selectedIdx];
+    if (!link) return null;
+    const unrestricted = await fetchAuthed(
+      `${RD_HOST}/unrestrict/link`,
+      this.apiKey,
+      {
+        method: "POST",
+        body: new URLSearchParams({ link }),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        signal
+      }
+    );
+    return unrestricted?.download ?? null;
+  }
+};
+function isCached(node) {
+  if (!node) return false;
+  if (Array.isArray(node)) return node.length > 0;
+  if (typeof node === "object") return Object.keys(node).length > 0;
+  return false;
+}
+function sleep3(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// src/resolvers/torbox.ts
+init_base2();
+var TB_HOST = "https://api.torbox.app/v1/api";
+var TorBoxResolver = class {
+  constructor(row) {
+    this.row = row;
+    this.provider = "torbox";
+    this.accepts = ["torrent", "usenet"];
+    this.apiKey = row.api_key ?? "";
+  }
+  async checkAvailability(candidates, signal) {
+    const out = /* @__PURE__ */ new Map();
+    if (!this.apiKey) return out;
+    const torrents = candidates.filter((c) => c.infoHash);
+    if (torrents.length === 0) return out;
+    const BATCH = 75;
+    for (let i = 0; i < torrents.length; i += BATCH) {
+      const slice = torrents.slice(i, i + BATCH);
+      const params = new URLSearchParams();
+      for (const c of slice) params.append("hash", c.infoHash);
+      const data = await fetchAuthed(
+        `${TB_HOST}/torrents/checkcached?${params.toString()}&format=object`,
+        this.apiKey,
+        { signal }
+      );
+      const cached = data?.data ?? {};
+      for (const c of slice) out.set(c.id, !!cached[c.infoHash]);
+    }
+    return out;
+  }
+  async resolve(candidate2, signal, hint) {
+    const r = await this.resolveDetailed(candidate2, signal, hint);
+    return r && "url" in r ? r.url : null;
+  }
+  /**
+   * Like {@link resolve} but also returns the NAME of the file we picked. The
+   * debrid service hands the name back so a caller can reject dirty hashlist entries whose cached
+   * TorBox content turns out to be unrelated (e.g. a mainstream show) — the
+   * torrent's release name matched, but the actual file doesn't.
+   *
+   * For an UNCACHED torrent TorBox queues the download instead of failing; in
+   * that case this returns a {@link QueuedResolve} (state + progress) so the
+   * caller can tell the user "it's downloading" rather than "not found".
+   */
+  async resolveDetailed(candidate2, signal, hint) {
+    if (!this.apiKey) return null;
+    if (candidate2.infoHash) return this.resolveTorrent(candidate2, signal, hint);
+    if (candidate2.nzbId) {
+      const url = await this.resolveUsenet(candidate2, signal, hint);
+      return url ? { url, name: candidate2.rawTitle ?? "" } : null;
+    }
+    return null;
+  }
+  async resolveTorrent(candidate2, signal, hint) {
+    const body = new FormData();
+    body.append("magnet", magnetFromHash(candidate2.infoHash));
+    const created = await fetchAuthed(
+      `${TB_HOST}/torrents/createtorrent`,
+      this.apiKey,
+      { method: "POST", body, signal }
+    );
+    const id = created?.data?.torrent_id;
+    if (!id) return null;
+    const info = await pollForReady(
+      () => fetchAuthed(`${TB_HOST}/torrents/mylist?id=${id}&bypass_cache=true`, this.apiKey, { signal })
+    );
+    const files = info?.data?.files ?? [];
+    if (!files.length) {
+      const d = info?.data;
+      if (!d) return null;
+      const progress = typeof d.progress === "number" ? Math.round(d.progress * 100) : null;
+      return { queued: true, state: d.download_state ?? null, progress, seeds: d.seeds ?? null };
+    }
+    const chosen = pickFileForEpisode(files, hint);
+    if (!chosen) return null;
+    const dl = await fetchAuthed(
+      `${TB_HOST}/torrents/requestdl?token=${encodeURIComponent(this.apiKey)}&torrent_id=${id}&file_id=${chosen.id}`,
+      this.apiKey,
+      { signal }
+    );
+    return dl?.data ? { url: dl.data, name: chosen.name ?? "" } : null;
+  }
+  async resolveUsenet(candidate2, signal, hint) {
+    const body = new FormData();
+    body.append("link", candidate2.nzbId);
+    const created = await fetchAuthed(
+      `${TB_HOST}/usenet/createusenetdownload`,
+      this.apiKey,
+      { method: "POST", body, signal }
+    );
+    const id = created?.data?.usenet_id;
+    if (!id) return null;
+    const info = await pollForReady(
+      () => fetchAuthed(`${TB_HOST}/usenet/mylist?id=${id}&bypass_cache=true`, this.apiKey, { signal })
+    );
+    const files = info?.data?.files ?? [];
+    if (!files.length) return null;
+    const chosen = pickFileForEpisode(files, hint);
+    if (!chosen) return null;
+    const dl = await fetchAuthed(
+      `${TB_HOST}/usenet/requestdl?token=${encodeURIComponent(this.apiKey)}&usenet_id=${id}&file_id=${chosen.id}`,
+      this.apiKey,
+      { signal }
+    );
+    return dl?.data ?? null;
+  }
+};
+async function pollForReady(fn) {
+  let last = null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const info = await fn();
+    if (info?.data?.files?.length) return info;
+    if (info?.data) last = info;
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  return last;
+}
+
 // src/resolvers/usenet.ts
+init_log();
 var UsenetResolver = class {
   constructor() {
     this.provider = "usenet";
@@ -6668,18 +6964,18 @@ var UsenetResolver = class {
     }
     return out;
   }
-  async resolve(candidate, signal, hint) {
-    if (!candidate.nzbId) return null;
+  async resolve(candidate2, signal, hint) {
+    if (!candidate2.nzbId) return null;
     const svc = await getUsenetEngine();
     if (!svc) {
       logger.warn("streams", "Usenet: no provider configured \u2014 set Usenet Provider host + login under API Keys");
       return null;
     }
     try {
-      const f = await svc.engine.prepare(candidate.nzbId, hint, signal);
+      const f = await svc.engine.prepare(candidate2.nzbId, hint, signal);
       return `http://127.0.0.1:${svc.streamPort}/usenet/${f.jobId}/${f.fileIndex}/${encodeURIComponent(f.name)}`;
     } catch (err) {
-      logger.warn("streams", `Usenet: can't stream "${candidate.rawTitle}": ${err.message}`);
+      logger.warn("streams", `Usenet: can't stream "${candidate2.rawTitle}": ${err.message}`);
       return null;
     }
   }
@@ -6782,10 +7078,10 @@ function cmpForKey(key) {
       return () => 0;
   }
 }
-function sortStreams(streams, prefs) {
-  if (prefs.sortOrder.length === 0) return streams;
+function sortStreams(streams2, prefs) {
+  if (prefs.sortOrder.length === 0) return streams2;
   const userCmps = prefs.sortOrder.map(cmpForKey);
-  return [...streams].sort((a, b) => {
+  return [...streams2].sort((a, b) => {
     const aPack = a.seasonPack ? 1 : 0;
     const bPack = b.seasonPack ? 1 : 0;
     if (aPack !== bPack) return aPack - bPack;
@@ -6796,12 +7092,12 @@ function sortStreams(streams, prefs) {
     return 0;
   });
 }
-function pinReleaseGroup(streams, preferredGroup, opts) {
-  if (!preferredGroup) return streams;
+function pinReleaseGroup(streams2, preferredGroup, opts) {
+  if (!preferredGroup) return streams2;
   const target = preferredGroup.toLowerCase();
   const matches = [];
   const rest = [];
-  for (const s of streams) {
+  for (const s of streams2) {
     if (s.releaseGroup && s.releaseGroup.toLowerCase() === target) {
       matches.push(s);
     } else {
@@ -6820,7 +7116,6 @@ function pinReleaseGroup(streams, preferredGroup, opts) {
 }
 
 // src/sources/comet.ts
-init_host();
 init_base();
 init_parser2();
 var DEFAULT_HOST = "https://comet.elfhosted.com";
@@ -6887,8 +7182,8 @@ var CometSource = class {
       const base = i >= 0 ? cfg.manifestUrl.slice(0, i) : cfg.manifestUrl;
       return base.replace(/\/+$/, "");
     }
-    const host2 = (this.row.url || DEFAULT_HOST).replace(/\/$/, "");
-    const accounts = await getForgeHost().listStreamAccounts("debrid");
+    const host3 = (this.row.url || DEFAULT_HOST).replace(/\/$/, "");
+    const accounts = await listStreamAccounts("debrid");
     const debridServices = accounts.filter((a) => a.enabled === 1 && a.api_key && COMET_SERVICE_BY_PROVIDER[a.provider]).map((a) => ({
       service: COMET_SERVICE_BY_PROVIDER[a.provider],
       apiKey: a.api_key ?? ""
@@ -6914,7 +7209,7 @@ var CometSource = class {
     };
     const configB64 = Buffer.from(JSON.stringify(configBlob)).toString("base64");
     const tokenSegment = cfg.publicToken ? `/s/${encodeURIComponent(cfg.publicToken)}` : "";
-    return `${host2}${tokenSegment}/${configB64}`;
+    return `${host3}${tokenSegment}/${configB64}`;
   }
 };
 function isCometErrorStream(s) {
@@ -7130,8 +7425,8 @@ var TorBoxSearchSource = class {
     const apiKey = this.row.api_key ?? "";
     if (!apiKey) return [];
     const tbImdbId = query.imdbId;
-    const path4 = query.kind === "movie" ? `/torrents/imdb:${tbImdbId}` : `/torrents/imdb:${tbImdbId}?season=${query.season ?? 1}&episode=${query.episode ?? 1}`;
-    const data = await fetchJson(`${TORBOX_SEARCH_HOST}${path4}`, {
+    const path5 = query.kind === "movie" ? `/torrents/imdb:${tbImdbId}` : `/torrents/imdb:${tbImdbId}?season=${query.season ?? 1}&episode=${query.episode ?? 1}`;
+    const data = await fetchJson(`${TORBOX_SEARCH_HOST}${path5}`, {
       signal,
       headers: { Authorization: `Bearer ${apiKey}` }
     });
@@ -7185,12 +7480,12 @@ var TorrentioSource = class {
   }
   async search(query, signal) {
     const cfg = readSourceConfig(this.row, { configToken: "" });
-    const host2 = (this.row.url || DEFAULT_HOST2).replace(/\/manifest\.json$/i, "").replace(/\/$/, "");
+    const host3 = (this.row.url || DEFAULT_HOST2).replace(/\/manifest\.json$/i, "").replace(/\/$/, "");
     const tokenPath = cfg.configToken ? `/${cfg.configToken.replace(/^\/+|\/+$/g, "")}` : "";
     if (!query.imdbId) return [];
     const addonType = query.kind === "movie" ? "movie" : "series";
     const streamPath = addonType === "movie" ? `/stream/movie/${query.imdbId}.json` : `/stream/series/${query.imdbId}:${query.season ?? 1}:${query.episode ?? 1}.json`;
-    const data = await fetchJson(`${host2}${tokenPath}${streamPath}`, { signal });
+    const data = await fetchJson(`${host3}${tokenPath}${streamPath}`, { signal });
     if (!data?.streams?.length) return [];
     return data.streams.filter((s) => !!s.infoHash).map((s) => buildCandidate2(this.row, s));
   }
@@ -7235,185 +7530,6 @@ function pullSeeders(text) {
   const m = text.match(/👤\s*(\d+)|seeders?\s*[:=]?\s*(\d+)/i);
   if (!m) return null;
   return parseInt(m[1] ?? m[2], 10);
-}
-
-// src/sources/torznab.ts
-init_base();
-var TorznabSource = class {
-  constructor(row) {
-    this.row = row;
-    this.type = row.source_type;
-    const isUsenet = row.source_type === "newznab" || row.source_type === "nzbhydra";
-    this.kind = isUsenet ? "usenet" : "torrent";
-  }
-  async search(query, signal) {
-    if (!this.row.url) return [];
-    const cfg = readSourceConfig(this.row, {
-      kind: this.kind === "usenet" ? "newznab" : "torznab",
-      categories: this.kind === "usenet" ? query.kind === "movie" ? [2e3] : [5e3] : query.kind === "movie" ? [2e3] : [5e3],
-      apiKey: this.row.api_key ?? ""
-    });
-    const params = new URLSearchParams();
-    params.set("t", query.kind === "movie" ? "movie" : "tvsearch");
-    if (cfg.apiKey || this.row.api_key) params.set("apikey", cfg.apiKey || this.row.api_key);
-    if (cfg.categories?.length) params.set("cat", cfg.categories.join(","));
-    if (query.imdbId) params.set("imdbid", query.imdbId.replace(/^tt/i, ""));
-    if (query.kind === "series") {
-      if (query.season != null) params.set("season", String(query.season));
-      if (query.episode != null) params.set("ep", String(query.episode));
-    }
-    if (query.title && (query.kind === "series" || !query.imdbId)) {
-      params.set("q", query.title);
-    }
-    const base = this.row.url.replace(/\/$/, "");
-    const url = `${base}/api?${params.toString()}`;
-    const xml = await fetchText(url, { signal });
-    if (!xml) return [];
-    return parseTorznabXml(xml, this.row, this.kind === "usenet");
-  }
-};
-function parseTorznabXml(xml, row, isUsenet) {
-  const items = [];
-  const itemRegex = /<item>([\s\S]*?)<\/item>/g;
-  let m;
-  while ((m = itemRegex.exec(xml)) !== null) {
-    const block = m[1];
-    const title = pickTag(block, "title") ?? "";
-    const link = pickTag(block, "link") ?? "";
-    const guid = pickTag(block, "guid") ?? link;
-    const description = pickTag(block, "description") ?? "";
-    const attrs = pickAttrs(block);
-    const enclosure = pickEnclosure(block);
-    const nzbUrl = enclosure?.type === "application/x-nzb" ? enclosure.url : enclosure?.url ?? link;
-    const infoHash = (attrs.get("infohash") ?? attrs.get("infoHash"))?.toLowerCase() ?? void 0;
-    const seedersStr = attrs.get("seeders");
-    const enclosureSize = enclosure?.length;
-    const sizeStr = attrs.get("size") ?? pickTag(block, "size") ?? enclosureSize ?? void 0;
-    const seeders = seedersStr ? parseInt(seedersStr, 10) : void 0;
-    const sizeBytes = sizeStr ? parseInt(sizeStr, 10) : void 0;
-    if (!link && !infoHash && !nzbUrl) continue;
-    if (isUsenet) {
-      if (!nzbUrl) continue;
-      items.push({
-        id: candidateId(row.id, guid || nzbUrl),
-        sourceType: row.source_type,
-        sourceId: row.id,
-        name: row.name,
-        description: description || title,
-        rawTitle: title,
-        nzbId: nzbUrl,
-        // NZB download URL — usenet resolvers fetch + submit this.
-        sizeBytes,
-        meta: { guid }
-      });
-    } else if (infoHash) {
-      items.push({
-        id: candidateId(row.id, infoHash),
-        sourceType: row.source_type,
-        sourceId: row.id,
-        name: row.name,
-        description: description || title,
-        rawTitle: title,
-        infoHash,
-        sizeBytes,
-        seeders,
-        meta: { guid, magnetLink: link.startsWith("magnet:") ? link : void 0 }
-      });
-    }
-  }
-  return items;
-}
-function pickTag(block, tag) {
-  const r = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, "i");
-  const m = block.match(r);
-  if (!m) return void 0;
-  return decodeEntities2(m[1].replace(/^<!\[CDATA\[/, "").replace(/\]\]>$/, "").trim());
-}
-function decodeEntities2(s) {
-  let out = s;
-  for (let i = 0; i < 2 && /&(?:[a-z]+|#\d+|#x[0-9a-f]+);/i.test(out); i++) {
-    out = out.replace(/&quot;/g, '"').replace(/&apos;|&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n))).replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16))).replace(/&amp;/g, "&");
-  }
-  return out;
-}
-function pickAttrs(block) {
-  const out = /* @__PURE__ */ new Map();
-  const r = /<(?:torznab|newznab):attr\s+name="([^"]+)"\s+value="([^"]*)"/g;
-  let m;
-  while ((m = r.exec(block)) !== null) {
-    out.set(m[1].toLowerCase(), m[2]);
-  }
-  return out;
-}
-function pickEnclosure(block) {
-  const m = /<enclosure\s+([^>]*?)\/?>/i.exec(block);
-  if (!m) return null;
-  const tag = m[1];
-  const url = decodeEntities2(/\burl="([^"]*)"/i.exec(tag)?.[1] ?? "");
-  if (!url) return null;
-  const length = /\blength="([^"]*)"/i.exec(tag)?.[1];
-  const type = /\btype="([^"]*)"/i.exec(tag)?.[1];
-  return { url, length, type };
-}
-var BOOK_CATS = {
-  ebook: [7020, 7030],
-  audiobook: [3030],
-  any: [7020, 7030, 3030]
-};
-async function searchBookReleases(rows, query, kind, signal, book) {
-  const usenet = rows.filter((r) => r.enabled === 1 && r.url && (r.source_type === "newznab" || r.source_type === "nzbhydra"));
-  const perIndexer = await Promise.all(usenet.map(async (row) => {
-    const api = (params) => {
-      params.set("cat", BOOK_CATS[kind].join(","));
-      params.set("limit", "100");
-      params.set("extended", "1");
-      if (row.api_key) params.set("apikey", row.api_key);
-      return fetchText(`${row.url.replace(/\/$/, "")}/api?${params}`, { signal });
-    };
-    if (book?.title) {
-      const p = new URLSearchParams({ t: "book", title: book.title });
-      if (book.author) p.set("author", book.author);
-      const xml2 = await api(p);
-      const found = xml2 && !/<error\b/i.test(xml2) ? parseBookItems(xml2, row) : [];
-      if (found.length) return found;
-    }
-    const xml = await api(new URLSearchParams({ t: "search", q: query }));
-    return xml ? parseBookItems(xml, row) : [];
-  }));
-  const seen = /* @__PURE__ */ new Set();
-  const out = [];
-  for (const r of perIndexer.flat()) {
-    const key = r.title.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(r);
-  }
-  return out;
-}
-function parseBookItems(xml, row) {
-  const out = [];
-  for (const m of xml.matchAll(/<item>([\s\S]*?)<\/item>/g)) {
-    const block = m[1];
-    const title = pickTag(block, "title") ?? "";
-    const enclosure = pickEnclosure(block);
-    const nzbUrl = enclosure?.url ?? pickTag(block, "link") ?? "";
-    if (!title || !nzbUrl) continue;
-    const attrs = pickAttrs(block);
-    const cats = [...block.matchAll(/<(?:newznab|torznab):attr\s+name="category"\s+value="(\d+)"/g)].map((c) => Number(c[1]));
-    const sizeStr = attrs.get("size") ?? enclosure?.length;
-    const pub = Date.parse(pickTag(block, "pubDate") ?? "");
-    const guid = pickTag(block, "guid") ?? nzbUrl;
-    out.push({
-      id: candidateId(row.id, guid),
-      title,
-      nzbUrl,
-      sizeBytes: sizeStr ? Number(sizeStr) || void 0 : void 0,
-      indexer: row.name,
-      kind: cats.some((c) => c >= 3e3 && c < 4e3) ? "audiobook" : "ebook",
-      publishedAt: Number.isFinite(pub) ? Math.floor(pub / 1e3) : void 0
-    });
-  }
-  return out;
 }
 
 // src/sources/zilean.ts
@@ -7514,11 +7630,11 @@ var WANT_ALIVE = 5;
 var MAX_SCREENED = 12;
 var CONCURRENCY = 4;
 var BUDGET_MS = 8e3;
-async function screenUsenet(streams, isUsenet) {
-  const queue = streams.filter((s) => s.nzbId && isUsenet(s));
-  if (!queue.length) return streams;
+async function screenUsenet(streams2, isUsenet) {
+  const queue = streams2.filter((s) => s.nzbId && isUsenet(s));
+  if (!queue.length) return streams2;
   const svc = await getUsenetEngine().catch(() => null);
-  if (!svc) return streams;
+  if (!svc) return streams2;
   const signal = AbortSignal.timeout(BUDGET_MS);
   const dead = /* @__PURE__ */ new Set();
   let alive = 0;
@@ -7544,7 +7660,7 @@ async function screenUsenet(streams, isUsenet) {
       `Usenet: screened ${screened} releases (${grabbed} new) \u2192 ${alive} alive, ${dead.size} gone from the provider (dropped) in ${Date.now() - t0} ms`
     );
   }
-  return dead.size ? streams.filter((s) => !dead.has(s.id)) : streams;
+  return dead.size ? streams2.filter((s) => !dead.has(s.id)) : streams2;
 }
 
 // src/formatter.ts
@@ -8147,6 +8263,61 @@ var DEFAULT_FORMATTER_CONFIG = {
     }
   ]
 };
+var PRESET_MINIMAL = {
+  title: {
+    separator: " ",
+    blocks: [
+      { category: "resolution", style: "names" },
+      { category: "seasonEpisode", style: "short" },
+      { category: "pack", style: "bracket" }
+    ]
+  },
+  subtitle: [
+    {
+      separator: " \xB7 ",
+      blocks: [
+        { category: "episodeName", style: "plain" },
+        { category: "quality", style: "short" },
+        { category: "size", style: "smart" },
+        { category: "languages", style: "codes" }
+      ]
+    }
+  ]
+};
+var PRESET_PRISM = {
+  title: {
+    separator: " ",
+    blocks: [
+      { category: "resolution", style: "emoji" },
+      { category: "cache", style: "emoji" },
+      { category: "seasonEpisode", style: "short" }
+    ]
+  },
+  subtitle: [
+    {
+      separator: " ",
+      blocks: [
+        { category: "episodeName", style: "emoji" },
+        { category: "quality", style: "tagged" },
+        { category: "hdr", style: "emoji" },
+        { category: "audio", style: "emoji" }
+      ]
+    },
+    {
+      separator: " ",
+      blocks: [
+        { category: "size", style: "emoji" },
+        { category: "seeders", style: "emoji" },
+        { category: "addon", style: "emoji" }
+      ]
+    }
+  ]
+};
+var PRESETS = {
+  default: DEFAULT_FORMATTER_CONFIG,
+  minimal: PRESET_MINIMAL,
+  prism: PRESET_PRISM
+};
 function parseFormatterConfig(raw) {
   if (!raw || typeof raw !== "object") return DEFAULT_FORMATTER_CONFIG;
   const obj = raw;
@@ -8191,20 +8362,20 @@ function prettySource(type) {
 async function syncNativeStreams(opts) {
   const { itemId, query, prefs, preferredReleaseGroup, formatter, episodeName } = opts;
   const start = Date.now();
-  const [sources, accounts, sourceRows] = await Promise.all([
+  const [sources2, accounts, sourceRows] = await Promise.all([
     loadSources(),
     loadAccounts(),
     loadSourceRows()
   ]);
-  const title = await getForgeHost().getMediaItemTitle(itemId) ?? itemId;
-  if (sources.length === 0) {
+  const title = [query.title, query.season != null ? `S${String(query.season).padStart(2, "0")}E${String(query.episode ?? 0).padStart(2, "0")}` : null, episodeName].filter(Boolean).join(" \xB7 ") || itemId;
+  if (sources2.length === 0) {
     logger.warn("streams", `${title} \u2014 no enabled stream sources, skipping search`);
     return [];
   }
   dbg(
-    `Pipeline start: ${sources.length} sources [${sources.map((s) => s.type).join(", ")}], ${accounts.length} resolvers [${accounts.map((a) => a.row.provider).join(", ")}]`
+    `Pipeline start: ${sources2.length} sources [${sources2.map((s) => s.type).join(", ")}], ${accounts.length} resolvers [${accounts.map((a) => a.row.provider).join(", ")}]`
   );
-  const { candidates: rawCandidates, perSource } = await searchAll(sources, query);
+  const { candidates: rawCandidates, perSource } = await searchAll(sources2, query);
   dbg(
     `Stage 1 search: ${rawCandidates.length} raw candidates (with infoHash: ${rawCandidates.filter((c) => c.infoHash).length}, with url: ${rawCandidates.filter((c) => c.url).length}, with nzb: ${rawCandidates.filter((c) => c.nzbId).length})`
   );
@@ -8237,7 +8408,7 @@ async function syncNativeStreams(opts) {
   const screened = usenetResolvers.size ? await screenUsenet(pinned, (s) => !!s.resolverId && usenetResolvers.has(s.resolverId)) : pinned;
   const sourceNameById = new Map(sourceRows.map((r) => [r.id, r.name]));
   const resolverProviderById = new Map(accounts.map((a) => [a.row.id, a.row.provider]));
-  await persist(
+  const rows = toRows(
     itemId,
     screened,
     formatter ?? DEFAULT_FORMATTER_CONFIG,
@@ -8263,7 +8434,7 @@ async function syncNativeStreams(opts) {
   } else {
     let why;
     if (rawCandidates.length === 0) {
-      why = `no candidates from ${sources.length} source${sources.length === 1 ? "" : "s"} (${sourcesStr})`;
+      why = `no candidates from ${sources2.length} source${sources2.length === 1 ? "" : "s"} (${sourcesStr})`;
     } else if (prefs.excludeUncached && available.length === 0) {
       const names = accounts.filter((a) => a.resolver.verifiesCache !== false).map((a) => prettyProvider(a.row.provider)).join(" / ") || "debrid";
       why = `${rawCandidates.length} found, none cached on ${names}; cached-only is on`;
@@ -8272,7 +8443,7 @@ async function syncNativeStreams(opts) {
     }
     logger.warn("streams", `${title} \u2014 0 streams (${why}) in ${tookSec}s`);
   }
-  return screened;
+  return rows;
 }
 async function resolveStream(stream, hint) {
   if (!stream.resolverId) {
@@ -8290,7 +8461,7 @@ async function resolveStream(stream, hint) {
     logger.warn("streams", `Resolve failed: ${row.provider} resolver could not be built`);
     return null;
   }
-  const candidate = {
+  const candidate2 = {
     id: stream.infoHash ?? stream.nzbId ?? "",
     sourceType: "cache",
     sourceId: stream.sourceId ?? "",
@@ -8305,7 +8476,7 @@ async function resolveStream(stream, hint) {
   const t0 = Date.now();
   try {
     const url = await resolver.resolve(
-      candidate,
+      candidate2,
       AbortSignal.timeout(DEFAULT_RESOLVE_TIMEOUT_MS),
       hint
     );
@@ -8321,12 +8492,12 @@ async function resolveStream(stream, hint) {
   }
 }
 async function loadSources() {
-  const rows = await getForgeHost().listStreamSources();
+  const rows = await listStreamSources();
   const enabled = rows.filter((r) => r.enabled === 1);
   return enabled.map(buildSource).filter((s) => s !== null);
 }
 async function listAccountsWithBuiltin() {
-  const rows = await getForgeHost().listStreamAccounts();
+  const rows = await listStreamAccounts();
   if (rows.some((r) => r.provider === "usenet") || !await readUsenetSettings()) return rows;
   return [...rows, {
     id: BUILTIN_USENET_ACCOUNT_ID,
@@ -8351,13 +8522,13 @@ async function loadAccounts() {
   return rows.filter((r) => r.enabled === 1).map((row) => ({ row, resolver: buildResolver(row) })).filter((x) => x.resolver !== null);
 }
 async function loadSourceRows() {
-  const rows = await getForgeHost().listStreamSources();
+  const rows = await listStreamSources();
   return rows.filter((r) => r.enabled === 1);
 }
-async function searchAll(sources, query) {
+async function searchAll(sources2, query) {
   const perSource = [];
   const results = await Promise.all(
-    sources.map(async (s) => {
+    sources2.map(async (s) => {
       const t0 = Date.now();
       const signal = AbortSignal.timeout(SOURCE_SEARCH_TIMEOUT_MS);
       try {
@@ -8374,8 +8545,8 @@ async function searchAll(sources, query) {
   );
   const seen = /* @__PURE__ */ new Set();
   const out = [];
-  for (const list of results) {
-    for (const c of list) {
+  for (const list2 of results) {
+    for (const c of list2) {
       const key = c.infoHash ?? c.nzbId ?? c.url ?? c.id;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -8464,75 +8635,504 @@ async function annotateAvailability(candidates, accounts) {
   if (rejected.size) logger.info("streams", `Dropped ${annotated.length - kept.length} releases known to be broken`);
   return { resolved: [...direct, ...kept], perDebrid };
 }
-async function persist(itemId, streams, formatter, sourceNameById, resolverProviderById, episodeName) {
-  await getForgeHost().setNativeStreams(
-    itemId,
-    streams.map((s, i) => {
-      const addonName = sourceNameById.get(s.sourceId) ?? s.sourceType;
-      const provider = s.resolverId ? resolverProviderById.get(s.resolverId) : null;
-      const debridName = provider ? prettyProvider(provider) : null;
-      const debridTag = provider ? providerTag(provider) : null;
-      const { title, subtitle } = formatStream(s, formatter, {
-        addonName,
-        episodeName,
-        debridName,
-        debridTag
-      });
-      const finalName = title.trim() ? title : s.name;
-      const finalDescription = subtitle.trim() ? subtitle : s.description;
-      return {
-        id: streamRowId(itemId, s),
-        url: s.url || `native://${s.infoHash ?? s.nzbId ?? s.id}`,
-        name: finalName,
-        description: finalDescription,
-        // Clean release name — kept distinct from the formatted name/description
-        // so JIT resolve hands the resolver a sane label (the formatted one has
-        // emoji/newlines that break usenet job submission).
-        rawTitle: s.rawTitle || s.name || null,
-        bingeGroup: s.bingeGroup ?? null,
-        sortIndex: i,
-        sourceId: s.sourceId,
-        resolverId: s.resolverId,
-        infoHash: s.infoHash ?? null,
-        nzbId: s.nzbId ?? null,
-        releaseGroup: s.releaseGroup,
-        resolution: s.resolution,
-        codec: s.codec,
-        hdrFlags: s.hdrFlags,
-        sizeBytes: s.sizeBytes ?? null,
-        seeders: s.seeders ?? null,
-        cachedOnDebrid: s.cachedOnDebrid,
-        languages: s.languages,
-        audioChannels: s.audioChannels,
-        audioCodec: s.audioCodec,
-        sourceTag: s.sourceTag
-      };
-    })
-  );
+function toRows(itemId, streams2, formatter, sourceNameById, resolverProviderById, episodeName) {
+  return streams2.map((s, i) => {
+    const addonName = sourceNameById.get(s.sourceId) ?? s.sourceType;
+    const provider = s.resolverId ? resolverProviderById.get(s.resolverId) : null;
+    const debridName = provider ? prettyProvider(provider) : null;
+    const debridTag = provider ? providerTag(provider) : null;
+    const { title, subtitle } = formatStream(s, formatter, {
+      addonName,
+      episodeName,
+      debridName,
+      debridTag
+    });
+    const finalName = title.trim() ? title : s.name;
+    const finalDescription = subtitle.trim() ? subtitle : s.description;
+    return {
+      id: streamRowId(itemId, s),
+      url: s.url || `native://${s.infoHash ?? s.nzbId ?? s.id}`,
+      name: finalName,
+      description: finalDescription,
+      // Clean release name — kept distinct from the formatted name/description
+      // so JIT resolve hands the resolver a sane label (the formatted one has
+      // emoji/newlines that break usenet job submission).
+      rawTitle: s.rawTitle || s.name || null,
+      bingeGroup: s.bingeGroup ?? null,
+      sortIndex: i,
+      sourceId: s.sourceId,
+      resolverId: s.resolverId,
+      infoHash: s.infoHash ?? null,
+      nzbId: s.nzbId ?? null,
+      releaseGroup: s.releaseGroup,
+      resolution: s.resolution,
+      codec: s.codec,
+      hdrFlags: s.hdrFlags,
+      sizeBytes: s.sizeBytes ?? null,
+      seeders: s.seeders ?? null,
+      cachedOnDebrid: s.cachedOnDebrid,
+      languages: s.languages,
+      audioChannels: s.audioChannels,
+      audioCodec: s.audioCodec,
+      sourceTag: s.sourceTag
+    };
+  });
 }
 function streamRowId(itemId, s) {
   const key = s.url || s.infoHash || s.nzbId || s.id;
   return createHash4("md5").update(`${itemId}:${key}`).digest("hex");
 }
 
-// src/plugin.ts
+// src/books.ts
+var FORMAT_ORDER = {
+  ebook: ["epub", "pdf", "cbz"],
+  audiobook: ["m4b", "mp3"]
+};
+var AUDIO_EXT = /\.(mp3|m4b|m4a|aac|ogg|opus|flac)$/i;
+function normKey(s) {
+  return (s ?? "").toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+}
+function releaseDisplay(r) {
+  const format = /\b(epub|pdf|cbz|mobi|azw3|m4b|mp3)\b/i.exec(r.title)?.[1]?.toLowerCase();
+  const year = Number(/\b((?:19|20)\d{2})\b/.exec(r.title)?.[1]) || void 0;
+  const cleaned = r.title.replace(/-[A-Za-z0-9]+$/, (g2) => /\s/.test(r.title) ? g2 : "").replace(/[._]+/g, " ").replace(/\b(epub|pdf|cbz|mobi|azw3|m4b|mp3|retail|e-?book|audio ?book|unabridged|abridged|\d{2,3} ?kbps)\b/gi, "").replace(/\(?\b(?:19|20)\d{2}\b\)?/g, "").replace(/\[[^\]]*\]|\(\s*\)/g, "").replace(/\s+-\s*$|^\s*-\s+/g, "").replace(/\s+/g, " ").trim();
+  const parts = cleaned.split(/\s+-\s+/);
+  if (parts.length >= 2) return { author: parts[0].trim(), title: parts.slice(1).join(" - ").trim(), year, format };
+  return { title: cleaned, year, format };
+}
+function sameBook(title, author, wantTitle, wantAuthor) {
+  const t = normKey(title);
+  const want = normKey(wantTitle);
+  const surname = normKey(wantAuthor).split(" ").pop() ?? "";
+  const titleOk = t === want || t.startsWith(`${want} `) || want.startsWith(`${t} `);
+  const authorOk = !surname || normKey(author).includes(surname) || t.includes(surname);
+  return titleOk && authorOk;
+}
+function pickEbook(files) {
+  const rank = (n) => /\.epub$/i.test(n) ? 0 : /\.pdf$/i.test(n) ? 1 : /\.cbz$/i.test(n) ? 2 : 3;
+  return [...files].sort((a, b) => rank(a.name) - rank(b.name) || b.size - a.size)[0];
+}
+function ordered(list2, kind, title, author, format) {
+  const order = FORMAT_ORDER[kind];
+  const rank = (r) => {
+    const i = order.indexOf(releaseDisplay(r).format ?? "");
+    return i < 0 ? order.length : i;
+  };
+  return list2.map((r, i) => ({ r, i, shown: releaseDisplay(r) })).filter(({ r, shown }) => r.kind === kind && (!format || shown.format === format) && sameBook(shown.title, shown.author, title, author)).sort((a, b) => Number(!!b.r.verified) - Number(!!a.r.verified) || rank(a.r) - rank(b.r) || a.i - b.i).map((x) => x.r);
+}
+async function search(query, kind, book) {
+  try {
+    const found = await searchBookReleases(await listStreamSources(), query, kind, AbortSignal.timeout(2e4), book);
+    const svc = await getUsenetEngine().catch(() => null);
+    if (!svc) return found;
+    const out = [];
+    for (const r of found) {
+      const v = await svc.engine.verdicts.get(r.nzbUrl);
+      if (v?.ok === false) continue;
+      out.push({ ...r, verified: v?.ok === true && !v.checked });
+    }
+    return out;
+  } catch (err) {
+    logger.warn("books", `Usenet book search failed: ${err.message}`);
+    return null;
+  }
+}
+async function bookStreams(type, extra) {
+  if (!await usenetEnabled().catch(() => false)) return [];
+  const kind = type === "audiobook" ? "audiobook" : "ebook";
+  const title = String(extra.title ?? "").trim();
+  const author = String(extra.author ?? "").trim();
+  const format = typeof extra.format === "string" && extra.format ? extra.format : void 0;
+  if (!title) return [];
+  const surname = author.split(/\s+/).pop() ?? "";
+  const queries = [.../* @__PURE__ */ new Set([[title, author].filter(Boolean).join(" "), [title, surname].filter(Boolean).join(" "), title])];
+  let releases = [];
+  for (const [i, q] of queries.entries()) {
+    releases = await search(q, kind, i === 0 ? { title, author } : void 0) ?? [];
+    if (releases.length) break;
+  }
+  const label = `"${title}"${author ? ` by ${author}` : ""} (${kind})`;
+  const matching = ordered(releases, kind, title, author, format);
+  if (!matching.length) {
+    logger.info("books", releases.length ? `${label}: ${releases.length} releases, none is this book` : `${label}: no releases`);
+    return [];
+  }
+  for (const r of matching.slice(0, 6)) {
+    try {
+      const files = await prepareBookFiles(r.nzbUrl, AbortSignal.timeout(6e4));
+      if (!files?.length) continue;
+      const audio = files.filter((f) => AUDIO_EXT.test(f.name));
+      const isAudio = audio.length > 0 && (kind === "audiobook" || audio.length === files.length);
+      if (kind === "audiobook" !== isAudio) continue;
+      const parts = isAudio ? audio : [pickEbook(files)];
+      const fmt = path4.extname(parts[0].name).slice(1).toLowerCase();
+      return [
+        {
+          id: `usenet:${r.id}`,
+          url: parts[0].url,
+          name: parts[0].name,
+          title: `Usenet \xB7 ${fmt.toUpperCase()}`,
+          format: fmt,
+          size: parts.reduce((n, f) => n + f.size, 0),
+          ...isAudio ? { files: parts.map((f) => ({ url: f.url, name: f.name })) } : {}
+        }
+      ];
+    } catch (err) {
+      logger.info("books", `Skipping "${r.title}": ${err.message}`);
+    }
+  }
+  logger.warn("books", `${label}: every matching usenet release failed`);
+  return [];
+}
+
+// src/debridService.ts
 init_log();
+var RD_HOST2 = "https://api.real-debrid.com/rest/1.0";
+var UNRESTRICTS = /* @__PURE__ */ new Set(["realdebrid"]);
+async function accountsWithKeys() {
+  const rows = await listStreamAccounts("debrid");
+  return rows.filter((a) => !!a.api_key).sort((a, b) => b.enabled - a.enabled || a.priority - b.priority);
+}
+async function pick(id, want) {
+  const rows = await accountsWithKeys();
+  if (id) return rows.find((a) => a.id === id) ?? null;
+  return rows.find((a) => a.enabled === 1 && (!want || want(a))) ?? null;
+}
+var candidate = (hash) => ({
+  id: hash,
+  sourceType: "service",
+  sourceId: "",
+  name: "",
+  description: "",
+  rawTitle: "",
+  infoHash: hash.toLowerCase()
+});
+var debridService = {
+  async accounts() {
+    const accounts = (await accountsWithKeys()).filter((a) => a.enabled === 1).map((a) => ({ id: a.id, provider: a.provider, name: prettyProvider(a.provider), unrestricts: UNRESTRICTS.has(a.provider) }));
+    return { accounts };
+  },
+  async cached({ hashes, account }) {
+    const row = await pick(account);
+    const resolver = row ? buildResolver(row) : null;
+    if (!resolver || !hashes.length) return { cached: [] };
+    const map = await resolver.checkAvailability(hashes.map(candidate), AbortSignal.timeout(3e4));
+    return { cached: hashes.filter((h) => map.get(h.toLowerCase()) === true || map.get(h) === true) };
+  },
+  async resolve({ hash, account, season, episode }) {
+    const row = await pick(account);
+    const resolver = row ? buildResolver(row) : null;
+    if (!resolver) return { status: "failed", message: "no debrid account" };
+    const hint = season || episode ? { season, episode } : void 0;
+    try {
+      if (resolver instanceof TorBoxResolver) {
+        const r = await resolver.resolveDetailed(candidate(hash), AbortSignal.timeout(6e4), hint);
+        if (!r) return { status: "failed" };
+        if ("queued" in r) return { status: "queued", state: r.state ?? void 0, progress: r.progress ?? null, seeds: r.seeds ?? null };
+        return { status: "ready", url: r.url, fileName: r.name };
+      }
+      const url = await resolver.resolve(candidate(hash), AbortSignal.timeout(6e4), hint);
+      return url ? { status: "ready", url } : { status: "failed" };
+    } catch (err) {
+      return { status: "failed", message: err.message };
+    }
+  },
+  async unrestrict({ link, account }) {
+    const row = await pick(account, (a) => UNRESTRICTS.has(a.provider));
+    if (!row?.api_key || !UNRESTRICTS.has(row.provider)) return { status: "failed", message: "no account that unrestricts links" };
+    try {
+      const res = await fetch(`${RD_HOST2}/unrestrict/link`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${row.api_key}`, "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ link }),
+        signal: AbortSignal.timeout(2e4)
+      });
+      if (!res.ok) {
+        logger.warn("debrid", `unrestrict \u2192 HTTP ${res.status}`);
+        return { status: "failed", message: res.status === 404 || res.status === 451 ? "gone" : `HTTP ${res.status}` };
+      }
+      const data = await res.json();
+      return data.download ? { status: "ready", url: data.download, fileName: data.filename, sizeBytes: data.filesize } : { status: "failed" };
+    } catch (err) {
+      return { status: "failed", message: err.message };
+    }
+  }
+};
+
+// src/plugin.ts
 init_host();
+init_log();
+
+// src/probes.ts
+init_base();
+init_log();
+async function probeSource(row) {
+  const t = AbortSignal.timeout(12e3);
+  switch (row.source_type) {
+    case "torrentio": {
+      const host3 = (row.url || "https://torrentio.strem.fun").replace(/\/$/, "");
+      const res = await fetch(`${host3}/stream/movie/tt0111161.json`, { signal: t });
+      if (!res.ok) return { ok: false, message: `HTTP ${res.status}` };
+      const data = await res.json();
+      const count = Array.isArray(data.streams) ? data.streams.length : 0;
+      return count > 0 ? { ok: true, sampleCount: count } : { ok: false, message: "Reachable but returned no streams for the canary title" };
+    }
+    case "zilean": {
+      if (!row.url) return { ok: false, message: "URL required" };
+      const host3 = row.url.replace(/\/$/, "");
+      const headers = {};
+      if (row.api_key) headers.Authorization = `Bearer ${row.api_key}`;
+      const ping = await fetch(`${host3}/healthchecks/ping`, { signal: t, headers }).catch(() => null);
+      if (ping?.ok) return { ok: true };
+      const sample = await fetch(`${host3}/dmm/filtered?Query=Shawshank`, { signal: t, headers });
+      if (!sample.ok) return { ok: false, message: `HTTP ${sample.status}` };
+      const data = await sample.json();
+      return { ok: true, sampleCount: Array.isArray(data) ? data.length : 0 };
+    }
+    case "comet": {
+      const host3 = (row.url || "https://comet.elfhosted.com").replace(/\/$/, "");
+      const ping = await fetch(`${host3}/manifest.json`, { signal: t }).catch(() => null);
+      if (ping?.ok) {
+        const manifest2 = await ping.json().catch(() => null);
+        if (manifest2?.id) return { ok: true };
+      }
+      const root = await fetch(host3, { signal: t }).catch(() => null);
+      if (root && root.status < 500) return { ok: true };
+      return { ok: false, message: "Comet host unreachable" };
+    }
+    case "torznab":
+    case "newznab":
+    case "nzbhydra": {
+      if (!row.url) return { ok: false, message: "URL required" };
+      const params = new URLSearchParams({ t: "caps" });
+      if (row.api_key) params.set("apikey", row.api_key);
+      const url = `${row.url.replace(/\/$/, "")}/api?${params.toString()}`;
+      const res = await fetch(url, { signal: t });
+      if (!res.ok) return { ok: false, message: `HTTP ${res.status}` };
+      const text = await res.text();
+      if (!text.includes("<caps") && !text.includes("<categories")) {
+        return { ok: false, message: "Unexpected response (not Torznab caps XML)" };
+      }
+      return { ok: true };
+    }
+    case "easynews": {
+      let user = "", pass = "";
+      try {
+        const cfg = JSON.parse(row.config_json);
+        user = cfg.username ?? "";
+        pass = cfg.password ?? "";
+      } catch {
+      }
+      if (!user || !pass) {
+        const [u, p] = (row.api_key ?? "").split(":");
+        user = user || u || "";
+        pass = pass || p || "";
+      }
+      if (!user || !pass) return { ok: false, message: "Username/password required" };
+      const host3 = (row.url || "https://members.easynews.com").replace(/\/$/, "");
+      const auth = Buffer.from(`${user}:${pass}`).toString("base64");
+      const res = await fetch(
+        `${host3}/2.0/search/solr-search/?fly=2&sb=1&pno=1&pby=10&u=1&st=basic&gps=Shawshank&fty%5B%5D=VIDEO`,
+        { signal: t, headers: { Authorization: `Basic ${auth}` } }
+      );
+      if (res.status === 401) return { ok: false, message: "Bad credentials" };
+      if (!res.ok) return { ok: false, message: `HTTP ${res.status}` };
+      const data = await res.json();
+      return { ok: true, sampleCount: Array.isArray(data.data) ? data.data.length : 0 };
+    }
+    case "torbox-search": {
+      if (!row.api_key) return { ok: false, message: "API key required" };
+      const res = await fetch(
+        "https://search-api.torbox.app/torrents/imdb:tt0111161",
+        { signal: t, headers: { Authorization: `Bearer ${row.api_key}` } }
+      );
+      if (res.status === 401) return { ok: false, message: "Bad TorBox key" };
+      if (!res.ok) return { ok: false, message: `HTTP ${res.status}` };
+      const data = await res.json();
+      const torrents = Array.isArray(data.data?.torrents) ? data.data.torrents.length : 0;
+      const nzbs = Array.isArray(data.data?.nzbs) ? data.data.nzbs.length : 0;
+      return { ok: true, sampleCount: torrents + nzbs };
+    }
+    case "external-addon": {
+      if (!row.url) return { ok: false, message: "Manifest URL required" };
+      const base = row.url.replace(/\/manifest\.json$/, "").replace(/\/$/, "");
+      const res = await fetch(`${base}/manifest.json`, { signal: t });
+      if (!res.ok) return { ok: false, message: `HTTP ${res.status}` };
+      const manifest2 = await res.json();
+      if (!manifest2.id || !manifest2.name) {
+        return { ok: false, message: "Reachable but manifest is missing id/name" };
+      }
+      const resources = Array.isArray(manifest2.resources) ? manifest2.resources.length : 0;
+      return { ok: true, sampleCount: resources };
+    }
+    default:
+      return { ok: false, message: `No probe defined for ${row.source_type}` };
+  }
+}
+async function probeProvider(provider, apiKey, host3) {
+  if (provider === "nzbdav" || provider === "altmount") {
+    if (!host3) return false;
+    const apiPath = provider === "altmount" ? "/sabnzbd/api" : "/api";
+    const sp = new URLSearchParams({ mode: "history", output: "json", limit: "1", ...apiKey ? { apikey: apiKey } : {} });
+    const url = `${host3.replace(/\/$/, "")}${apiPath}?${sp.toString()}`;
+    try {
+      const res2 = await fetch(url, {
+        headers: apiKey ? { "X-Api-Key": apiKey } : {},
+        signal: AbortSignal.timeout(8e3)
+      });
+      return res2.ok;
+    } catch (err) {
+      logger.warn("streams", `Usenet test ${provider} unreachable (${describeFetchFailure(err)}) on ${redactUrl(url)}`);
+      throw err;
+    }
+  }
+  if (!apiKey) return false;
+  const t = AbortSignal.timeout(1e4);
+  const map = {
+    realdebrid: () => fetch("https://api.real-debrid.com/rest/1.0/user", { headers: { Authorization: `Bearer ${apiKey}` }, signal: t }),
+    alldebrid: () => fetch(`https://api.alldebrid.com/v4/user?agent=zero&apikey=${encodeURIComponent(apiKey)}`, { signal: t }),
+    premiumize: () => fetch(`https://www.premiumize.me/api/account/info?apikey=${encodeURIComponent(apiKey)}`, { signal: t }),
+    torbox: () => fetch("https://api.torbox.app/v1/api/user/me", { headers: { Authorization: `Bearer ${apiKey}` }, signal: t }),
+    easydebrid: () => fetch("https://easydebrid.com/api/v1/user/details", { headers: { Authorization: `Bearer ${apiKey}` }, signal: t }),
+    debridlink: () => fetch("https://debrid-link.com/api/v2/account/infos", { headers: { Authorization: `Bearer ${apiKey}` }, signal: t }),
+    offcloud: () => fetch(`https://offcloud.com/api/account/stats?apiKey=${encodeURIComponent(apiKey)}`, { signal: t }),
+    putio: () => fetch("https://api.put.io/v2/account/info", { headers: { Authorization: `Bearer ${apiKey}` }, signal: t })
+  };
+  const fn = map[provider];
+  if (!fn) return false;
+  const res = await fn().catch(() => null);
+  return !!res && res.ok;
+}
+
+// src/stremio.ts
+var TIMEOUT_MS = 12e3;
+var manifests = /* @__PURE__ */ new Map();
+var baseOf = (row) => (row.url ?? "").replace(/\/manifest\.json$/, "").replace(/\/$/, "");
+async function getJson(url) {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+async function sources() {
+  return (await listStreamSources()).filter((s) => s.source_type === "external-addon" && s.enabled === 1 && !!s.url);
+}
+async function manifestOf(row) {
+  const hit = manifests.get(row.id);
+  if (hit && Date.now() - hit.at < 30 * 6e4) return hit.manifest;
+  const manifest2 = await getJson(`${baseOf(row)}/manifest.json`);
+  if (manifest2) manifests.set(row.id, { at: Date.now(), manifest: manifest2 });
+  return manifest2;
+}
+var takesSearch = (c) => (c.extra ?? []).some((e) => e.name === "search") || (c.extraSupported ?? []).includes("search");
+var browsable = (c) => !(c.extra ?? []).some((e) => e.isRequired && e.name !== "skip" && e.name !== "genre");
+async function stremioCatalogs() {
+  const out = [];
+  for (const row of await sources()) {
+    const m = await manifestOf(row);
+    for (const c of m?.catalogs ?? []) {
+      if (c.type !== "movie" && c.type !== "series" || !browsable(c)) continue;
+      out.push({ id: `${row.id}|${c.id}`, type: c.type, name: c.name ?? c.id, extra: ["skip"] });
+    }
+  }
+  return { catalogs: out };
+}
+async function stremioCatalog(type, id, extra) {
+  const [sourceId, catalogId] = id.split("|");
+  const row = (await sources()).find((s) => s.id === sourceId);
+  if (!row || !catalogId) return { metas: [] };
+  const skip = Number(extra.skip) || 0;
+  const path5 = `${baseOf(row)}/catalog/${type}/${encodeURIComponent(catalogId)}${skip ? `/skip=${skip}` : ""}.json`;
+  return { metas: (await getJson(path5))?.metas ?? [] };
+}
+async function stremioSearch(type, query) {
+  if (!query.trim()) return { metas: [] };
+  const lists = await Promise.all(
+    (await sources()).map(async (row) => {
+      const m = await manifestOf(row);
+      const cats = (m?.catalogs ?? []).filter((c) => c.type === type && takesSearch(c));
+      const found = await Promise.all(
+        cats.map((c) => getJson(`${baseOf(row)}/catalog/${type}/${encodeURIComponent(c.id)}/search=${encodeURIComponent(query)}.json`))
+      );
+      return found.flatMap((f) => f?.metas ?? []);
+    })
+  );
+  const seen = /* @__PURE__ */ new Set();
+  return { metas: lists.flat().filter((x) => !!x?.id && !seen.has(x.id) && !!seen.add(x.id)) };
+}
+async function stremioMeta(type, id) {
+  for (const row of await sources()) {
+    const m = await manifestOf(row);
+    const servesMeta = (m?.resources ?? []).some((r) => (typeof r === "string" ? r : r.name) === "meta");
+    if (!servesMeta) continue;
+    const body = await getJson(`${baseOf(row)}/meta/${type}/${encodeURIComponent(id)}.json`);
+    if (body?.meta) return { meta: body.meta };
+  }
+  return { meta: null };
+}
+async function stremioArtwork(type, id) {
+  const { meta } = await stremioMeta(type, id);
+  const str2 = (v) => typeof v === "string" && v ? v : null;
+  return { artwork: { poster: str2(meta?.poster), background: str2(meta?.background), logo: str2(meta?.logo) } };
+}
+
+// src/subtitles.ts
+async function subtitles(type, id, extra) {
+  const sources2 = (await listStreamSources()).filter((s) => s.source_type === "external-addon" && s.enabled === 1 && !!s.url);
+  if (!sources2.length) return { subtitles: [] };
+  const args = [];
+  if (extra.videoHash) args.push(`videoHash=${encodeURIComponent(String(extra.videoHash))}`);
+  if (extra.videoSize) args.push(`videoSize=${encodeURIComponent(String(extra.videoSize))}`);
+  if (extra.filename) args.push(`filename=${encodeURIComponent(String(extra.filename))}`);
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  await Promise.all(
+    sources2.map(async (source) => {
+      const base = (source.url ?? "").replace(/\/manifest\.json$/, "").replace(/\/$/, "");
+      if (!base) return;
+      const plain = `${base}/subtitles/${type}/${encodeURIComponent(id)}.json`;
+      const withArgs = args.length ? `${base}/subtitles/${type}/${encodeURIComponent(id)}/${args.join("&")}.json` : plain;
+      try {
+        let res = await fetch(withArgs, { signal: AbortSignal.timeout(1e4) });
+        if (!res.ok && withArgs !== plain) res = await fetch(plain, { signal: AbortSignal.timeout(1e4) });
+        if (!res.ok) return;
+        const data = await res.json();
+        for (const sub of data.subtitles ?? []) {
+          if (!sub?.url || seen.has(sub.url)) continue;
+          seen.add(sub.url);
+          out.push({ id: sub.id, url: sub.url, lang: sub.lang, name: source.name });
+        }
+      } catch {
+      }
+    })
+  );
+  return { subtitles: out };
+}
 
 // manifest.json
 var manifest_default = {
   id: "zero.forge",
   name: "Forge",
   version: "2.0.6",
-  description: "Torrent/usenet indexers + debrid resolution for Zero Media. Brings the streams pipeline (Torrentio, Zilean, Torznab/Newznab, Comet, EasyNews, TorBox search) and the debrid/usenet resolvers, plus a built-in usenet streaming engine (your provider + indexer, no NZBDav needed). Installing reveals Forge tab and the debrid/usenet credentials.",
+  description: "Streams for movies and shows: indexers (Torrentio, Zilean, Torznab/Newznab, Comet, EasyNews, TorBox search, Stremio addons) resolved through debrid or usenet \u2014 with a built-in usenet engine. Offers debrid to other add-ons, and books over usenet.",
   resources: [
     "stream",
-    "resolve"
+    "resolve",
+    "subtitles",
+    "catalogs",
+    "catalog",
+    "search",
+    "meta",
+    "artwork"
   ],
   types: [
     "movie",
     "series",
-    "episode"
+    "episode",
+    "book",
+    "audiobook"
   ],
   idPrefixes: [
     "tt",
@@ -8542,260 +9142,889 @@ var manifest_default = {
     content: [
       "movies",
       "series",
+      "anime",
+      "books"
+    ],
+    metadata: [
+      "movies",
+      "series",
+      "anime"
+    ],
+    artwork: [
+      "movies",
+      "series",
+      "anime"
+    ],
+    subtitles: [
+      "movies",
+      "series",
       "anime"
     ]
   },
   zero: {
     kind: "forge",
-    sdk: 2,
+    sdk: 3,
     repo: "j4ckgrey/zero_forge",
     branch: "main",
     bundlePath: "dist/index.mjs",
     bundleUrl: "https://raw.githubusercontent.com/j4ckgrey/zero_forge/release/dist/index.mjs",
-    tabs: [
+    settings: [
       {
-        id: "forge",
-        label: "Forge",
-        icon: "hammer"
-      }
-    ],
-    configKeys: [
+        key: "resolutions",
+        type: "list",
+        label: "Resolutions to keep",
+        description: "One per line: 2160p, 1080p, 720p, 480p, unknown.",
+        default: [
+          "2160p",
+          "1080p",
+          "720p",
+          "480p",
+          "unknown"
+        ]
+      },
+      {
+        key: "codecs",
+        type: "list",
+        label: "Video codecs to keep",
+        description: "h264, h265, av1, vp9, mpeg2 \u2014 empty keeps every codec.",
+        default: []
+      },
+      {
+        key: "hdr_allowed",
+        type: "toggle",
+        label: "Allow HDR / Dolby Vision",
+        default: true
+      },
+      {
+        key: "size_min_mb",
+        type: "number",
+        label: "Smallest file (MB)",
+        min: 0
+      },
+      {
+        key: "size_max_mb",
+        type: "number",
+        label: "Largest file (MB)",
+        min: 0
+      },
+      {
+        key: "languages",
+        type: "list",
+        label: "Only these languages",
+        description: "Two-letter codes, one per line \u2014 empty allows every language. MULTi / DUAL releases always pass.",
+        default: []
+      },
+      {
+        key: "excluded_languages",
+        type: "list",
+        label: "Drop these languages",
+        description: "Two-letter codes, one per line.",
+        default: []
+      },
+      {
+        key: "sort_order",
+        type: "list",
+        label: "Sort by",
+        description: "In order: resolution, cached, seeders, size.",
+        default: [
+          "resolution",
+          "cached",
+          "seeders",
+          "size"
+        ]
+      },
+      {
+        key: "min_seeders",
+        type: "number",
+        label: "Fewest seeders",
+        min: 0
+      },
+      {
+        key: "exclude_uncached",
+        type: "toggle",
+        label: "Cached on debrid only",
+        description: "Hide releases your debrid hasn't downloaded yet.",
+        default: false
+      },
+      {
+        key: "binge_pin_release_group",
+        type: "toggle",
+        label: "Keep the same release while binging",
+        default: true
+      },
+      {
+        key: "binge_pin_scope",
+        type: "select",
+        label: "Keep it for",
+        default: "season",
+        options: [
+          {
+            value: "season",
+            label: "The season"
+          },
+          {
+            value: "series",
+            label: "The whole series"
+          }
+        ]
+      },
+      {
+        key: "binge_strict_release_group",
+        type: "toggle",
+        label: "Only that release",
+        description: "Show nothing else when the release is available.",
+        default: false
+      },
+      {
+        key: "binge_only_season_packs",
+        type: "toggle",
+        label: "Season packs only while binging",
+        default: false
+      },
+      {
+        key: "formatter_preset",
+        type: "select",
+        label: "Stream labels",
+        default: "default",
+        options: [
+          {
+            value: "default",
+            label: "Default"
+          },
+          {
+            value: "minimal",
+            label: "Minimal"
+          },
+          {
+            value: "prism",
+            label: "Prism"
+          },
+          {
+            value: "custom",
+            label: "Custom (JSON below)"
+          }
+        ]
+      },
+      {
+        key: "formatter_json",
+        type: "textarea",
+        label: "Custom label format (JSON)",
+        showIf: {
+          key: "formatter_preset",
+          equals: "custom"
+        }
+      },
       {
         key: "usenet_host",
-        label: "Server",
-        category: "Usenet",
-        secret: false,
-        placeholder: "news.provider.com",
-        description: "Your usenet provider's news server address. Fill these in and Zero Media streams from your own provider \u2014 nothing else to set up.",
-        card: "usenet"
+        type: "text",
+        label: "Usenet server",
+        placeholder: "news.example.com"
       },
       {
         key: "usenet_port",
+        type: "number",
         label: "Port",
-        category: "Usenet",
-        secret: false,
-        placeholder: "563",
-        description: "563 = SSL (default).",
-        card: "usenet"
+        default: 563,
+        min: 1,
+        max: 65535
       },
       {
         key: "usenet_ssl",
+        type: "toggle",
         label: "SSL",
-        category: "Usenet",
-        secret: false,
-        placeholder: "true",
-        description: "true (default) or false.",
-        card: "usenet"
+        default: true
       },
       {
         key: "usenet_username",
-        label: "Username",
-        category: "Usenet",
-        secret: false,
-        placeholder: "",
-        description: "Your provider login.",
-        card: "usenet"
+        type: "text",
+        label: "Username"
       },
       {
         key: "usenet_password",
-        label: "Password",
-        category: "Usenet",
-        description: "Your provider password.",
-        card: "usenet",
-        placeholder: ""
+        type: "secret",
+        label: "Password"
       },
       {
         key: "usenet_connections",
+        type: "number",
         label: "Connections",
-        category: "Usenet",
-        secret: false,
-        placeholder: "10",
-        description: "Keep at or under your plan's limit.",
-        card: "usenet"
+        default: 10,
+        min: 1,
+        max: 100
       },
       {
-        key: "realdebrid_api_key",
-        label: "Real-Debrid",
-        category: "Debrid Providers",
-        description: "API token from real-debrid.com/apitoken."
-      },
-      {
-        key: "alldebrid_api_key",
-        label: "AllDebrid",
-        category: "Debrid Providers",
-        description: "API key from alldebrid.com/apikeys."
-      },
-      {
-        key: "premiumize_api_key",
-        label: "Premiumize",
-        category: "Debrid Providers",
-        description: "API key from premiumize.me/account."
-      },
-      {
-        key: "torbox_api_key",
-        label: "TorBox",
-        category: "Debrid Providers",
-        description: "API key from torbox.app/settings. Also powers the TorBox search indexer."
-      },
-      {
-        key: "debridlink_api_key",
-        label: "Debrid-Link",
-        category: "Debrid Providers",
-        description: "API token from debrid-link.com/webapp/apikey."
-      },
-      {
-        key: "offcloud_api_key",
-        label: "Offcloud",
-        category: "Debrid Providers",
-        description: "API key from offcloud.com/account/preferences."
-      },
-      {
-        key: "putio_api_key",
-        label: "Put.io",
-        category: "Debrid Providers",
-        description: "OAuth token from put.io/oauth."
-      },
-      {
-        key: "easydebrid_api_key",
-        label: "EasyDebrid",
-        category: "Debrid Providers",
-        description: "API key from easydebrid.com."
-      },
-      {
-        key: "nzbdav_host",
-        label: "NZBDav Host URL",
-        category: "Self-Hosted Usenet",
-        secret: false,
-        placeholder: "http://192.168.1.10:8080",
-        description: "Base URL of your NZBDav instance."
-      },
-      {
-        key: "nzbdav_api_key",
-        label: "NZBDav API Key",
-        category: "Self-Hosted Usenet",
-        description: "Optional \u2014 leave blank if NZBDav requires none."
-      },
-      {
-        key: "altmount_host",
-        label: "AltMount Host URL",
-        category: "Self-Hosted Usenet",
-        secret: false,
-        placeholder: "http://192.168.1.10:9000",
-        description: "Base URL of your AltMount instance."
-      },
-      {
-        key: "altmount_api_key",
-        label: "AltMount API Key",
-        category: "Self-Hosted Usenet",
-        description: "Optional \u2014 leave blank if AltMount requires none."
+        key: "usenet_stream_port",
+        type: "number",
+        label: "Local stream port",
+        default: 47810,
+        min: 1024,
+        max: 65535
       }
     ],
-    features: [
-      "torrents",
-      "debrid",
-      "usenet"
-    ]
+    actions: [
+      {
+        id: "status"
+      },
+      {
+        id: "sources-list"
+      },
+      {
+        id: "source-add"
+      },
+      {
+        id: "source-toggle"
+      },
+      {
+        id: "source-test"
+      },
+      {
+        id: "source-delete"
+      },
+      {
+        id: "accounts-list"
+      },
+      {
+        id: "account-add"
+      },
+      {
+        id: "account-toggle"
+      },
+      {
+        id: "account-test"
+      },
+      {
+        id: "account-delete"
+      },
+      {
+        id: "usenet-test"
+      }
+    ],
+    ui: {
+      tabs: [
+        {
+          id: "sources",
+          label: "Forge",
+          icon: "server",
+          group: "streaming",
+          description: "Where movies and shows stream from: indexers, debrid and usenet.",
+          sections: [
+            {
+              kind: "status",
+              id: "status",
+              title: "Status",
+              source: "status"
+            },
+            {
+              kind: "table",
+              id: "sources",
+              title: "Indexers",
+              description: "Searched in parallel for every title; torrents play through a debrid account below, NZBs through usenet.",
+              rows: "sources-list",
+              columns: [
+                {
+                  key: "name",
+                  label: "Indexer"
+                },
+                {
+                  key: "type",
+                  label: "Type",
+                  format: "badge"
+                },
+                {
+                  key: "url",
+                  label: "Address",
+                  format: "mono"
+                },
+                {
+                  key: "enabled",
+                  label: "On",
+                  format: "bool"
+                },
+                {
+                  key: "health",
+                  label: "Last test"
+                }
+              ],
+              rowButtons: [
+                {
+                  action: "source-test",
+                  label: "Test"
+                },
+                {
+                  action: "source-toggle",
+                  label: "On / off"
+                },
+                {
+                  action: "source-delete",
+                  label: "Remove",
+                  tone: "danger",
+                  confirm: "Remove this indexer?"
+                }
+              ],
+              add: {
+                action: "source-add",
+                label: "Add indexer",
+                fields: [
+                  {
+                    key: "source_type",
+                    type: "select",
+                    label: "Type",
+                    options: [
+                      {
+                        value: "torrentio",
+                        label: "Torrentio \u2014 public torrent addon"
+                      },
+                      {
+                        value: "comet",
+                        label: "Comet \u2014 hosted Zilean + debrid"
+                      },
+                      {
+                        value: "zilean",
+                        label: "Zilean \u2014 self-hosted DMM hashlist"
+                      },
+                      {
+                        value: "torznab",
+                        label: "Torznab \u2014 Prowlarr / Jackett"
+                      },
+                      {
+                        value: "newznab",
+                        label: "Newznab \u2014 usenet indexer"
+                      },
+                      {
+                        value: "nzbhydra",
+                        label: "NZBHydra2 \u2014 usenet aggregator"
+                      },
+                      {
+                        value: "easynews",
+                        label: "EasyNews \u2014 HTTP usenet"
+                      },
+                      {
+                        value: "torbox-search",
+                        label: "TorBox built-in search"
+                      },
+                      {
+                        value: "external-addon",
+                        label: "Stremio addon (manifest URL)"
+                      }
+                    ],
+                    default: "torrentio"
+                  },
+                  {
+                    key: "name",
+                    type: "text",
+                    label: "Name (optional)"
+                  },
+                  {
+                    key: "url",
+                    type: "url",
+                    label: "Address",
+                    description: "Leave empty for the public Torrentio / Comet / EasyNews; a Stremio addon's manifest URL for that type."
+                  },
+                  {
+                    key: "api_key",
+                    type: "secret",
+                    label: "API key",
+                    description: "Torznab / Newznab / NZBHydra / TorBox search; EasyNews as user:password."
+                  },
+                  {
+                    key: "config_json",
+                    type: "textarea",
+                    label: "Extra settings (JSON, optional)",
+                    description: 'e.g. {"categories":[2000,5000]} for Torznab.'
+                  }
+                ]
+              },
+              empty: "No indexers yet \u2014 add Torrentio to start."
+            },
+            {
+              kind: "table",
+              id: "accounts",
+              title: "Debrid & usenet accounts",
+              description: "Resolve what the indexers find into playable links, in this order.",
+              rows: "accounts-list",
+              columns: [
+                {
+                  key: "name",
+                  label: "Account"
+                },
+                {
+                  key: "kind",
+                  label: "Kind",
+                  format: "badge"
+                },
+                {
+                  key: "key",
+                  label: "Key"
+                },
+                {
+                  key: "premium",
+                  label: "Premium until",
+                  format: "date"
+                },
+                {
+                  key: "enabled",
+                  label: "On",
+                  format: "bool"
+                },
+                {
+                  key: "health",
+                  label: "Last test"
+                }
+              ],
+              rowButtons: [
+                {
+                  action: "account-test",
+                  label: "Test"
+                },
+                {
+                  action: "account-toggle",
+                  label: "On / off"
+                },
+                {
+                  action: "account-delete",
+                  label: "Remove",
+                  tone: "danger",
+                  confirm: "Remove this account?"
+                }
+              ],
+              add: {
+                action: "account-add",
+                label: "Add account",
+                fields: [
+                  {
+                    key: "provider",
+                    type: "select",
+                    label: "Provider",
+                    options: [
+                      {
+                        value: "realdebrid",
+                        label: "Real-Debrid"
+                      },
+                      {
+                        value: "alldebrid",
+                        label: "AllDebrid"
+                      },
+                      {
+                        value: "premiumize",
+                        label: "Premiumize"
+                      },
+                      {
+                        value: "torbox",
+                        label: "TorBox (debrid + usenet)"
+                      },
+                      {
+                        value: "easydebrid",
+                        label: "EasyDebrid"
+                      },
+                      {
+                        value: "debridlink",
+                        label: "Debrid-Link"
+                      },
+                      {
+                        value: "offcloud",
+                        label: "Offcloud"
+                      },
+                      {
+                        value: "putio",
+                        label: "Put.io"
+                      },
+                      {
+                        value: "nzbdav",
+                        label: "NZBDav (self-hosted usenet)"
+                      },
+                      {
+                        value: "altmount",
+                        label: "AltMount (self-hosted usenet)"
+                      }
+                    ],
+                    default: "realdebrid"
+                  },
+                  {
+                    key: "api_key",
+                    type: "secret",
+                    label: "API key"
+                  },
+                  {
+                    key: "host",
+                    type: "url",
+                    label: "Address (NZBDav / AltMount only)"
+                  },
+                  {
+                    key: "priority",
+                    type: "number",
+                    label: "Order (lower first)",
+                    default: 100,
+                    min: 0
+                  }
+                ]
+              },
+              empty: "No accounts yet \u2014 torrents need a debrid account to play."
+            },
+            {
+              kind: "form",
+              id: "usenet",
+              title: "Built-in usenet",
+              description: "Your usenet provider \u2014 Forge streams NZBs itself, no NZBDav needed. Leave the server empty to turn it off.",
+              fields: [
+                "usenet_host",
+                "usenet_port",
+                "usenet_ssl",
+                "usenet_username",
+                "usenet_password",
+                "usenet_connections",
+                "usenet_stream_port"
+              ]
+            },
+            {
+              kind: "buttons",
+              id: "usenet-tools",
+              buttons: [
+                {
+                  action: "usenet-test",
+                  label: "Test usenet login"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          id: "preferences",
+          label: "Stream preferences",
+          icon: "sliders",
+          group: "streaming",
+          description: "Which releases show, in what order, and how their labels read.",
+          sections: [
+            {
+              kind: "form",
+              id: "filters",
+              title: "Filters",
+              fields: [
+                "resolutions",
+                "codecs",
+                "hdr_allowed",
+                "size_min_mb",
+                "size_max_mb",
+                "languages",
+                "excluded_languages",
+                "min_seeders",
+                "exclude_uncached"
+              ]
+            },
+            {
+              kind: "form",
+              id: "order",
+              title: "Order",
+              fields: [
+                "sort_order"
+              ]
+            },
+            {
+              kind: "form",
+              id: "binge",
+              title: "Binge watching",
+              fields: [
+                "binge_pin_release_group",
+                "binge_pin_scope",
+                "binge_strict_release_group",
+                "binge_only_season_packs"
+              ]
+            },
+            {
+              kind: "form",
+              id: "labels",
+              title: "Labels",
+              fields: [
+                "formatter_preset",
+                "formatter_json"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    services: {
+      provides: [
+        "debrid"
+      ]
+    }
   }
 };
 
 // src/plugin.ts
-function buildApi() {
-  return {
-    syncNativeStreams(opts) {
-      return syncNativeStreams({
-        itemId: opts.itemId,
-        query: opts.query,
-        prefs: parseStreamPrefs(opts.prefsRow),
-        preferredReleaseGroup: opts.preferredReleaseGroup ?? null,
-        formatter: parseFormatterConfig(
-          opts.formatterJson ? JSON.parse(opts.formatterJson) : null
-        ),
-        episodeName: opts.episodeName ?? null
-      });
-    },
-    resolveStream,
-    /** Built-in usenet engine: can we log in to the configured provider? */
-    testUsenet: (overrides) => testUsenetLogin(overrides),
-    /** Known not to play (articles gone, password, nothing playable). */
-    async isKnownBadNzb(nzbUrl) {
-      const svc = await getUsenetEngine();
-      return svc ? svc.engine.verdicts.isBad(nzbUrl) : false;
-    },
-    /** Books space: search the usenet indexers' book categories. */
-    /** Usenet switched on (provider set up, account not disabled)? */
-    usenetEnabled,
-    async searchBooks(opts) {
-      if (!await usenetEnabled()) return [];
-      const rows = await getForgeHost().listStreamSources();
-      const book = opts.title ? { title: opts.title, author: opts.author } : void 0;
-      const found = await searchBookReleases(rows, opts.query, opts.kind ?? "any", AbortSignal.timeout(2e4), book);
-      const svc = await getUsenetEngine().catch(() => null);
-      if (!svc) return found;
-      const out = [];
-      for (const r of found) {
-        const v = await svc.engine.verdicts.get(r.nzbUrl);
-        if (v?.ok === false) continue;
-        out.push({ ...r, verified: v?.ok === true && !v.checked });
-      }
-      return out;
-    },
-    /** Books space: the files of one release, streamable from the engine. */
-    async prepareBook(nzbUrl) {
-      if (!await usenetEnabled()) throw new Error("usenet is switched off");
-      return prepareBookFiles(nzbUrl, AbortSignal.timeout(6e4));
+var host2 = null;
+var settings = async () => host2 ? host2.settings.get().catch(() => ({})) : {};
+var list = (v, fallback = []) => Array.isArray(v) ? v.map((x) => x.trim()).filter(Boolean) : fallback;
+var num = (v) => typeof v === "number" && Number.isFinite(v) ? v : null;
+function prefsOf(s) {
+  return parseStreamPrefs({
+    resolutions_json: JSON.stringify(list(s.resolutions, ["2160p", "1080p", "720p", "480p", "unknown"])),
+    codecs_json: JSON.stringify(list(s.codecs)),
+    hdr_allowed: s.hdr_allowed === false ? 0 : 1,
+    size_min_mb: num(s.size_min_mb),
+    size_max_mb: num(s.size_max_mb),
+    languages_json: JSON.stringify(list(s.languages)),
+    excluded_languages_json: JSON.stringify(list(s.excluded_languages)),
+    sort_order_json: JSON.stringify(list(s.sort_order, ["resolution", "cached", "seeders", "size"])),
+    binge_pin_release_group: s.binge_pin_release_group === false ? 0 : 1,
+    min_seeders: num(s.min_seeders),
+    exclude_uncached: s.exclude_uncached === true ? 1 : 0,
+    binge_only_season_packs: s.binge_only_season_packs === true ? 1 : 0,
+    binge_strict_release_group: s.binge_strict_release_group === true ? 1 : 0,
+    binge_pin_scope: s.binge_pin_scope === "series" ? "series" : "season"
+  });
+}
+function formatterOf(s) {
+  const preset = typeof s.formatter_preset === "string" ? s.formatter_preset : "default";
+  if (preset === "custom") {
+    try {
+      return parseFormatterConfig(JSON.parse(String(s.formatter_json ?? "")));
+    } catch {
+      return DEFAULT_FORMATTER_CONFIG;
     }
-  };
+  }
+  return PRESETS[preset] ?? DEFAULT_FORMATTER_CONFIG;
 }
-function queryFromRequest({ type, id, extra }) {
-  const num = (v) => {
-    const n = Number(v);
-    return Number.isFinite(n) && n > 0 ? n : void 0;
-  };
+var HEIGHT = { "2160p": 2160, "1080p": 1080, "720p": 720, "480p": 480 };
+function toAddonStream(r) {
+  const needsResolve = r.url.startsWith("native://");
+  const ref = { resolverId: r.resolverId, infoHash: r.infoHash, nzbId: r.nzbId, rawTitle: r.rawTitle, sourceId: r.sourceId };
   return {
-    kind: type === "movie" ? "movie" : "series",
-    imdbId: /^tt\d+/.test(id) ? id : void 0,
-    tmdbId: id.startsWith("tmdb:") ? id.slice(5) : void 0,
-    title: typeof extra.title === "string" ? extra.title : void 0,
-    year: num(extra.year),
-    season: num(extra.season),
-    episode: num(extra.episode)
+    id: r.id,
+    url: needsResolve ? null : r.url,
+    name: r.name,
+    description: r.description,
+    display: {
+      title: r.name ?? r.rawTitle ?? "",
+      lines: (r.description ?? "").split("\n").filter(Boolean),
+      height: r.resolution ? HEIGHT[r.resolution] : void 0,
+      sizeBytes: r.sizeBytes ?? void 0,
+      group: r.bingeGroup ?? void 0
+    },
+    release: {
+      rawTitle: r.rawTitle ?? void 0,
+      group: r.releaseGroup ?? void 0,
+      resolution: r.resolution ?? void 0,
+      codec: r.codec ?? void 0,
+      hdr: r.hdrFlags,
+      languages: r.languages,
+      audioCodec: r.audioCodec ?? void 0,
+      audioChannels: r.audioChannels ?? void 0,
+      sizeBytes: r.sizeBytes ?? void 0,
+      seeders: r.seeders ?? void 0
+    },
+    forge: ref
   };
 }
+function queryOf(req) {
+  const item = req.context?.item ?? {};
+  const id = req.id;
+  return {
+    kind: req.type === "movie" ? "movie" : "series",
+    imdbId: item.imdbId ?? (/^tt\d+/.test(id) ? id.split(":")[0] : void 0),
+    tmdbId: item.tmdbId ?? (id.startsWith("tmdb:") ? id.slice(5).split(":")[0] : void 0),
+    title: item.title,
+    year: item.year,
+    season: item.season,
+    episode: item.episode
+  };
+}
+async function streams(req) {
+  if (req.type === "book" || req.type === "audiobook") return { streams: await bookStreams(req.type, req.extra) };
+  const query = queryOf(req);
+  const s = await settings();
+  const key = createHash5("md5").update(JSON.stringify([query.imdbId ?? query.tmdbId ?? req.id, query.season ?? null, query.episode ?? null])).digest("hex");
+  const rows = await syncNativeStreams({
+    itemId: key,
+    query,
+    prefs: prefsOf(s),
+    preferredReleaseGroup: req.context?.item?.previousReleaseGroup ?? null,
+    formatter: formatterOf(s),
+    episodeName: req.context?.item?.episodeTitle ?? null
+  });
+  return { streams: rows.map(toAddonStream) };
+}
+async function resolve({ extra }) {
+  const stream = extra.stream ?? {};
+  const ref = stream.forge;
+  if (!ref) return { url: typeof stream.url === "string" ? stream.url : null };
+  const url = await resolveStream(
+    { resolverId: ref.resolverId, infoHash: ref.infoHash, nzbId: ref.nzbId, rawTitle: ref.rawTitle ?? void 0, sourceId: ref.sourceId ?? void 0 },
+    extra.hint
+  );
+  return { url };
+}
+var health = (r) => r.last_checked_at ? r.last_error ? `Failed: ${r.last_error}` : "OK" : "Not tested";
+async function status() {
+  const [sources2, accounts, usenet] = await Promise.all([listStreamSources(), listStreamAccounts(), readUsenetSettings()]);
+  const on = sources2.filter((x) => x.enabled === 1);
+  const debrid = accounts.filter((a) => a.kind === "debrid" && a.enabled === 1);
+  const usenetAccounts = accounts.filter((a) => a.kind === "usenet" && a.enabled === 1);
+  const torrents = on.some((x) => ["torrentio", "zilean", "torznab", "comet", "torbox-search"].includes(x.source_type));
+  const item = (label, value, tone) => ({ label, value, tone });
+  return {
+    ok: true,
+    items: [
+      item("Indexers", on.length ? `${on.length} on` : "None \u2014 add one below", on.length ? "success" : "warning"),
+      item("Debrid", debrid.length ? debrid.map((a) => prettyProvider(a.provider)).join(", ") : torrents ? "None \u2014 torrents can't play" : "None", debrid.length ? "success" : torrents ? "error" : "info"),
+      item("Usenet", usenet ? `Built-in \xB7 ${usenet.host}` : usenetAccounts.length ? usenetAccounts.map((a) => prettyProvider(a.provider)).join(", ") : "Off", usenet || usenetAccounts.length ? "success" : "info")
+    ]
+  };
+}
+var str = (v) => typeof v === "string" ? v.trim() : "";
+var rowOf = (input) => input.row ?? {};
+var DEFAULT_NAME = {
+  torrentio: "Torrentio",
+  comet: "Comet",
+  zilean: "Zilean",
+  torznab: "Torznab",
+  newznab: "Newznab",
+  nzbhydra: "NZBHydra2",
+  easynews: "EasyNews",
+  "torbox-search": "TorBox search",
+  "external-addon": "Stremio addon"
+};
+var USENET_PROVIDERS = /* @__PURE__ */ new Set(["nzbdav", "altmount"]);
+var actions = {
+  status: async () => status(),
+  "sources-list": async () => ({
+    ok: true,
+    rows: (await listStreamSources()).map((x) => ({
+      id: x.id,
+      name: x.name,
+      type: x.source_type,
+      url: x.url ?? "",
+      enabled: x.enabled === 1,
+      health: health(x)
+    }))
+  }),
+  "source-add": async (input) => {
+    const type = str(input.source_type);
+    if (!DEFAULT_NAME[type]) return { ok: false, message: "Pick a type" };
+    let config = {};
+    if (str(input.config_json)) {
+      try {
+        config = JSON.parse(str(input.config_json));
+      } catch {
+        return { ok: false, message: "Extra settings must be JSON" };
+      }
+    }
+    await upsertStreamSource({
+      id: `src-${randomUUID().slice(0, 8)}`,
+      sourceType: type,
+      name: str(input.name) || DEFAULT_NAME[type],
+      url: str(input.url) || null,
+      apiKey: str(input.api_key) || null,
+      config
+    });
+    return { ok: true, message: "Added" };
+  },
+  "source-toggle": async (input) => {
+    const row = await getStreamSource(rowOf(input).id ?? "");
+    if (!row) return { ok: false, message: "Not found" };
+    let config = {};
+    try {
+      config = JSON.parse(row.config_json);
+    } catch {
+    }
+    await upsertStreamSource({ id: row.id, sourceType: row.source_type, name: row.name, url: row.url, apiKey: row.api_key, enabled: row.enabled !== 1, priority: row.priority, config });
+    return { ok: true, message: row.enabled === 1 ? "Off" : "On" };
+  },
+  "source-test": async (input) => {
+    const row = await getStreamSource(rowOf(input).id ?? "");
+    if (!row) return { ok: false, message: "Not found" };
+    const now = Math.floor(Date.now() / 1e3);
+    try {
+      const r = await probeSource(row);
+      await setStreamSourceStatus(row.id, { lastCheckedAt: now, lastError: r.ok ? null : r.message ?? "Probe failed" });
+      return { ok: r.ok, message: r.ok ? r.sampleCount != null ? `OK \xB7 ${r.sampleCount} results` : "OK" : r.message };
+    } catch (err) {
+      const message = err.message;
+      await setStreamSourceStatus(row.id, { lastCheckedAt: now, lastError: message });
+      return { ok: false, message };
+    }
+  },
+  "source-delete": async (input) => {
+    await deleteStreamSource(rowOf(input).id ?? "");
+    return { ok: true, message: "Removed" };
+  },
+  "accounts-list": async () => ({
+    ok: true,
+    rows: (await listStreamAccounts()).map((a) => ({
+      id: a.id,
+      name: prettyProvider(a.provider),
+      kind: a.kind,
+      key: a.api_key ? "Set" : USENET_PROVIDERS.has(a.provider) ? a.host ?? "" : "Missing",
+      premium: a.premium_until ? a.premium_until * 1e3 : null,
+      enabled: a.enabled === 1,
+      health: health(a)
+    }))
+  }),
+  "account-add": async (input) => {
+    const provider = str(input.provider);
+    if (!provider) return { ok: false, message: "Pick a provider" };
+    const kind = USENET_PROVIDERS.has(provider) ? "usenet" : "debrid";
+    if (kind === "usenet" && !str(input.host)) return { ok: false, message: "Address required" };
+    if (kind === "debrid" && !str(input.api_key)) return { ok: false, message: "API key required" };
+    await upsertStreamAccount({
+      id: `acc-${randomUUID().slice(0, 8)}`,
+      provider,
+      kind,
+      apiKey: str(input.api_key) || null,
+      host: str(input.host) || null,
+      priority: num(input.priority) ?? 100
+    });
+    return { ok: true, message: "Added" };
+  },
+  "account-toggle": async (input) => {
+    const a = await getStreamAccount(rowOf(input).id ?? "");
+    if (!a) return { ok: false, message: "Not found" };
+    await upsertStreamAccount({ id: a.id, provider: a.provider, kind: a.kind, apiKey: a.api_key, host: a.host, enabled: a.enabled !== 1, priority: a.priority, config: JSON.parse(a.config_json || "{}") });
+    return { ok: true, message: a.enabled === 1 ? "Off" : "On" };
+  },
+  "account-test": async (input) => {
+    const a = await getStreamAccount(rowOf(input).id ?? "");
+    if (!a) return { ok: false, message: "Not found" };
+    const now = Math.floor(Date.now() / 1e3);
+    try {
+      const ok = await probeProvider(a.provider, a.api_key ?? "", a.host ?? "");
+      await setStreamAccountStatus(a.id, { lastCheckedAt: now, lastError: ok ? null : "Probe failed (HTTP \u2265 400 or empty)" });
+      return ok ? { ok: true, message: "OK" } : { ok: false, message: "Probe failed" };
+    } catch (err) {
+      const message = err.message;
+      await setStreamAccountStatus(a.id, { lastCheckedAt: now, lastError: message });
+      return { ok: false, message };
+    }
+  },
+  "account-delete": async (input) => {
+    await deleteStreamAccount(rowOf(input).id ?? "");
+    return { ok: true, message: "Removed" };
+  },
+  "usenet-test": async (input) => {
+    const r = await testUsenetLogin(input);
+    return { ok: r.ok, message: r.message };
+  }
+};
 var addon = defineAddon({
   manifest: manifest_default,
-  setup(host2) {
-    setForgeHost(host2);
-    startUsenetService().catch(
-      (err) => logger.warn("streams", `Usenet service did not start: ${err.message}`)
-    );
-    const api = buildApi();
+  async setup(h) {
+    host2 = h;
+    setForgeHost(h);
+    await migrateStorage();
+    startUsenetService().catch((err) => logger.warn("streams", `Usenet service did not start: ${err.message}`));
     return {
-      api,
       resources: {
-        // stream/<movie|series|episode>/<tt…|tmdb:…>.json — search + cache
-        // streams for the item. `extra` carries the embedder's prefs row +
-        // formatter JSON (the pipeline needs the operator's filter/sort/format
-        // settings; they are the embedder's data, not the addon's).
-        stream: async (req) => {
-          const streams = await api.syncNativeStreams({
-            itemId: String(req.extra.itemId ?? req.id),
-            query: queryFromRequest(req),
-            prefsRow: req.extra.prefsRow ?? {},
-            preferredReleaseGroup: req.extra.preferredReleaseGroup ?? null,
-            formatterJson: req.extra.formatterJson ?? null,
-            episodeName: req.extra.episodeName ?? null
-          });
-          return { streams };
-        },
-        // resolve/<type>/<id>.json — turn one chosen candidate into a URL.
-        resolve: async ({ extra }) => {
-          const url = await api.resolveStream(
-            extra.stream ?? {},
-            extra.hint
-          );
-          return { url };
-        }
-      }
+        stream: streams,
+        resolve,
+        subtitles: ({ type, id, extra }) => subtitles(type, id, extra),
+        // What its Stremio-addon sources offer beyond streams (stremio.ts).
+        catalogs: () => stremioCatalogs(),
+        catalog: ({ type, id, extra }) => stremioCatalog(type, id, extra),
+        search: ({ type, id }) => stremioSearch(type, id),
+        meta: ({ type, id }) => stremioMeta(type, id),
+        artwork: ({ type, id }) => stremioArtwork(type, id)
+      },
+      actions,
+      services: { debrid: debridService }
     };
   }
 });

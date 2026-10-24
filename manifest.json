@@ -2,15 +2,23 @@
   "id": "zero.forge",
   "name": "Forge",
   "version": "2.0.6",
-  "description": "Torrent/usenet indexers + debrid resolution for Zero Media. Brings the streams pipeline (Torrentio, Zilean, Torznab/Newznab, Comet, EasyNews, TorBox search) and the debrid/usenet resolvers, plus a built-in usenet streaming engine (your provider + indexer, no NZBDav needed). Installing reveals Forge tab and the debrid/usenet credentials.",
+  "description": "Streams for movies and shows: indexers (Torrentio, Zilean, Torznab/Newznab, Comet, EasyNews, TorBox search, Stremio addons) resolved through debrid or usenet — with a built-in usenet engine. Offers debrid to other add-ons, and books over usenet.",
   "resources": [
     "stream",
-    "resolve"
+    "resolve",
+    "subtitles",
+    "catalogs",
+    "catalog",
+    "search",
+    "meta",
+    "artwork"
   ],
   "types": [
     "movie",
     "series",
-    "episode"
+    "episode",
+    "book",
+    "audiobook"
   ],
   "idPrefixes": [
     "tt",
@@ -20,158 +28,610 @@
     "content": [
       "movies",
       "series",
+      "anime",
+      "books"
+    ],
+    "metadata": [
+      "movies",
+      "series",
+      "anime"
+    ],
+    "artwork": [
+      "movies",
+      "series",
+      "anime"
+    ],
+    "subtitles": [
+      "movies",
+      "series",
       "anime"
     ]
   },
   "zero": {
     "kind": "forge",
-    "sdk": 2,
+    "sdk": 3,
     "repo": "j4ckgrey/zero_forge",
     "branch": "main",
     "bundlePath": "dist/index.mjs",
     "bundleUrl": "https://raw.githubusercontent.com/j4ckgrey/zero_forge/release/dist/index.mjs",
-    "tabs": [
+    "settings": [
       {
-        "id": "forge",
-        "label": "Forge",
-        "icon": "hammer"
-      }
-    ],
-    "configKeys": [
+        "key": "resolutions",
+        "type": "list",
+        "label": "Resolutions to keep",
+        "description": "One per line: 2160p, 1080p, 720p, 480p, unknown.",
+        "default": [
+          "2160p",
+          "1080p",
+          "720p",
+          "480p",
+          "unknown"
+        ]
+      },
+      {
+        "key": "codecs",
+        "type": "list",
+        "label": "Video codecs to keep",
+        "description": "h264, h265, av1, vp9, mpeg2 — empty keeps every codec.",
+        "default": []
+      },
+      {
+        "key": "hdr_allowed",
+        "type": "toggle",
+        "label": "Allow HDR / Dolby Vision",
+        "default": true
+      },
+      {
+        "key": "size_min_mb",
+        "type": "number",
+        "label": "Smallest file (MB)",
+        "min": 0
+      },
+      {
+        "key": "size_max_mb",
+        "type": "number",
+        "label": "Largest file (MB)",
+        "min": 0
+      },
+      {
+        "key": "languages",
+        "type": "list",
+        "label": "Only these languages",
+        "description": "Two-letter codes, one per line — empty allows every language. MULTi / DUAL releases always pass.",
+        "default": []
+      },
+      {
+        "key": "excluded_languages",
+        "type": "list",
+        "label": "Drop these languages",
+        "description": "Two-letter codes, one per line.",
+        "default": []
+      },
+      {
+        "key": "sort_order",
+        "type": "list",
+        "label": "Sort by",
+        "description": "In order: resolution, cached, seeders, size.",
+        "default": [
+          "resolution",
+          "cached",
+          "seeders",
+          "size"
+        ]
+      },
+      {
+        "key": "min_seeders",
+        "type": "number",
+        "label": "Fewest seeders",
+        "min": 0
+      },
+      {
+        "key": "exclude_uncached",
+        "type": "toggle",
+        "label": "Cached on debrid only",
+        "description": "Hide releases your debrid hasn't downloaded yet.",
+        "default": false
+      },
+      {
+        "key": "binge_pin_release_group",
+        "type": "toggle",
+        "label": "Keep the same release while binging",
+        "default": true
+      },
+      {
+        "key": "binge_pin_scope",
+        "type": "select",
+        "label": "Keep it for",
+        "default": "season",
+        "options": [
+          {
+            "value": "season",
+            "label": "The season"
+          },
+          {
+            "value": "series",
+            "label": "The whole series"
+          }
+        ]
+      },
+      {
+        "key": "binge_strict_release_group",
+        "type": "toggle",
+        "label": "Only that release",
+        "description": "Show nothing else when the release is available.",
+        "default": false
+      },
+      {
+        "key": "binge_only_season_packs",
+        "type": "toggle",
+        "label": "Season packs only while binging",
+        "default": false
+      },
+      {
+        "key": "formatter_preset",
+        "type": "select",
+        "label": "Stream labels",
+        "default": "default",
+        "options": [
+          {
+            "value": "default",
+            "label": "Default"
+          },
+          {
+            "value": "minimal",
+            "label": "Minimal"
+          },
+          {
+            "value": "prism",
+            "label": "Prism"
+          },
+          {
+            "value": "custom",
+            "label": "Custom (JSON below)"
+          }
+        ]
+      },
+      {
+        "key": "formatter_json",
+        "type": "textarea",
+        "label": "Custom label format (JSON)",
+        "showIf": {
+          "key": "formatter_preset",
+          "equals": "custom"
+        }
+      },
       {
         "key": "usenet_host",
-        "label": "Server",
-        "category": "Usenet",
-        "secret": false,
-        "placeholder": "news.provider.com",
-        "description": "Your usenet provider's news server address. Fill these in and Zero Media streams from your own provider — nothing else to set up.",
-        "card": "usenet"
+        "type": "text",
+        "label": "Usenet server",
+        "placeholder": "news.example.com"
       },
       {
         "key": "usenet_port",
+        "type": "number",
         "label": "Port",
-        "category": "Usenet",
-        "secret": false,
-        "placeholder": "563",
-        "description": "563 = SSL (default).",
-        "card": "usenet"
+        "default": 563,
+        "min": 1,
+        "max": 65535
       },
       {
         "key": "usenet_ssl",
+        "type": "toggle",
         "label": "SSL",
-        "category": "Usenet",
-        "secret": false,
-        "placeholder": "true",
-        "description": "true (default) or false.",
-        "card": "usenet"
+        "default": true
       },
       {
         "key": "usenet_username",
-        "label": "Username",
-        "category": "Usenet",
-        "secret": false,
-        "placeholder": "",
-        "description": "Your provider login.",
-        "card": "usenet"
+        "type": "text",
+        "label": "Username"
       },
       {
         "key": "usenet_password",
-        "label": "Password",
-        "category": "Usenet",
-        "description": "Your provider password.",
-        "card": "usenet",
-        "placeholder": ""
+        "type": "secret",
+        "label": "Password"
       },
       {
         "key": "usenet_connections",
+        "type": "number",
         "label": "Connections",
-        "category": "Usenet",
-        "secret": false,
-        "placeholder": "10",
-        "description": "Keep at or under your plan's limit.",
-        "card": "usenet"
+        "default": 10,
+        "min": 1,
+        "max": 100
       },
       {
-        "key": "realdebrid_api_key",
-        "label": "Real-Debrid",
-        "category": "Debrid Providers",
-        "description": "API token from real-debrid.com/apitoken."
-      },
-      {
-        "key": "alldebrid_api_key",
-        "label": "AllDebrid",
-        "category": "Debrid Providers",
-        "description": "API key from alldebrid.com/apikeys."
-      },
-      {
-        "key": "premiumize_api_key",
-        "label": "Premiumize",
-        "category": "Debrid Providers",
-        "description": "API key from premiumize.me/account."
-      },
-      {
-        "key": "torbox_api_key",
-        "label": "TorBox",
-        "category": "Debrid Providers",
-        "description": "API key from torbox.app/settings. Also powers the TorBox search indexer."
-      },
-      {
-        "key": "debridlink_api_key",
-        "label": "Debrid-Link",
-        "category": "Debrid Providers",
-        "description": "API token from debrid-link.com/webapp/apikey."
-      },
-      {
-        "key": "offcloud_api_key",
-        "label": "Offcloud",
-        "category": "Debrid Providers",
-        "description": "API key from offcloud.com/account/preferences."
-      },
-      {
-        "key": "putio_api_key",
-        "label": "Put.io",
-        "category": "Debrid Providers",
-        "description": "OAuth token from put.io/oauth."
-      },
-      {
-        "key": "easydebrid_api_key",
-        "label": "EasyDebrid",
-        "category": "Debrid Providers",
-        "description": "API key from easydebrid.com."
-      },
-      {
-        "key": "nzbdav_host",
-        "label": "NZBDav Host URL",
-        "category": "Self-Hosted Usenet",
-        "secret": false,
-        "placeholder": "http://192.168.1.10:8080",
-        "description": "Base URL of your NZBDav instance."
-      },
-      {
-        "key": "nzbdav_api_key",
-        "label": "NZBDav API Key",
-        "category": "Self-Hosted Usenet",
-        "description": "Optional — leave blank if NZBDav requires none."
-      },
-      {
-        "key": "altmount_host",
-        "label": "AltMount Host URL",
-        "category": "Self-Hosted Usenet",
-        "secret": false,
-        "placeholder": "http://192.168.1.10:9000",
-        "description": "Base URL of your AltMount instance."
-      },
-      {
-        "key": "altmount_api_key",
-        "label": "AltMount API Key",
-        "category": "Self-Hosted Usenet",
-        "description": "Optional — leave blank if AltMount requires none."
+        "key": "usenet_stream_port",
+        "type": "number",
+        "label": "Local stream port",
+        "default": 47810,
+        "min": 1024,
+        "max": 65535
       }
     ],
-    "features": [
-      "torrents",
-      "debrid",
-      "usenet"
-    ]
+    "actions": [
+      {
+        "id": "status"
+      },
+      {
+        "id": "sources-list"
+      },
+      {
+        "id": "source-add"
+      },
+      {
+        "id": "source-toggle"
+      },
+      {
+        "id": "source-test"
+      },
+      {
+        "id": "source-delete"
+      },
+      {
+        "id": "accounts-list"
+      },
+      {
+        "id": "account-add"
+      },
+      {
+        "id": "account-toggle"
+      },
+      {
+        "id": "account-test"
+      },
+      {
+        "id": "account-delete"
+      },
+      {
+        "id": "usenet-test"
+      }
+    ],
+    "ui": {
+      "tabs": [
+        {
+          "id": "sources",
+          "label": "Forge",
+          "icon": "server",
+          "group": "streaming",
+          "description": "Where movies and shows stream from: indexers, debrid and usenet.",
+          "sections": [
+            {
+              "kind": "status",
+              "id": "status",
+              "title": "Status",
+              "source": "status"
+            },
+            {
+              "kind": "table",
+              "id": "sources",
+              "title": "Indexers",
+              "description": "Searched in parallel for every title; torrents play through a debrid account below, NZBs through usenet.",
+              "rows": "sources-list",
+              "columns": [
+                {
+                  "key": "name",
+                  "label": "Indexer"
+                },
+                {
+                  "key": "type",
+                  "label": "Type",
+                  "format": "badge"
+                },
+                {
+                  "key": "url",
+                  "label": "Address",
+                  "format": "mono"
+                },
+                {
+                  "key": "enabled",
+                  "label": "On",
+                  "format": "bool"
+                },
+                {
+                  "key": "health",
+                  "label": "Last test"
+                }
+              ],
+              "rowButtons": [
+                {
+                  "action": "source-test",
+                  "label": "Test"
+                },
+                {
+                  "action": "source-toggle",
+                  "label": "On / off"
+                },
+                {
+                  "action": "source-delete",
+                  "label": "Remove",
+                  "tone": "danger",
+                  "confirm": "Remove this indexer?"
+                }
+              ],
+              "add": {
+                "action": "source-add",
+                "label": "Add indexer",
+                "fields": [
+                  {
+                    "key": "source_type",
+                    "type": "select",
+                    "label": "Type",
+                    "options": [
+                      {
+                        "value": "torrentio",
+                        "label": "Torrentio — public torrent addon"
+                      },
+                      {
+                        "value": "comet",
+                        "label": "Comet — hosted Zilean + debrid"
+                      },
+                      {
+                        "value": "zilean",
+                        "label": "Zilean — self-hosted DMM hashlist"
+                      },
+                      {
+                        "value": "torznab",
+                        "label": "Torznab — Prowlarr / Jackett"
+                      },
+                      {
+                        "value": "newznab",
+                        "label": "Newznab — usenet indexer"
+                      },
+                      {
+                        "value": "nzbhydra",
+                        "label": "NZBHydra2 — usenet aggregator"
+                      },
+                      {
+                        "value": "easynews",
+                        "label": "EasyNews — HTTP usenet"
+                      },
+                      {
+                        "value": "torbox-search",
+                        "label": "TorBox built-in search"
+                      },
+                      {
+                        "value": "external-addon",
+                        "label": "Stremio addon (manifest URL)"
+                      }
+                    ],
+                    "default": "torrentio"
+                  },
+                  {
+                    "key": "name",
+                    "type": "text",
+                    "label": "Name (optional)"
+                  },
+                  {
+                    "key": "url",
+                    "type": "url",
+                    "label": "Address",
+                    "description": "Leave empty for the public Torrentio / Comet / EasyNews; a Stremio addon's manifest URL for that type."
+                  },
+                  {
+                    "key": "api_key",
+                    "type": "secret",
+                    "label": "API key",
+                    "description": "Torznab / Newznab / NZBHydra / TorBox search; EasyNews as user:password."
+                  },
+                  {
+                    "key": "config_json",
+                    "type": "textarea",
+                    "label": "Extra settings (JSON, optional)",
+                    "description": "e.g. {\"categories\":[2000,5000]} for Torznab."
+                  }
+                ]
+              },
+              "empty": "No indexers yet — add Torrentio to start."
+            },
+            {
+              "kind": "table",
+              "id": "accounts",
+              "title": "Debrid & usenet accounts",
+              "description": "Resolve what the indexers find into playable links, in this order.",
+              "rows": "accounts-list",
+              "columns": [
+                {
+                  "key": "name",
+                  "label": "Account"
+                },
+                {
+                  "key": "kind",
+                  "label": "Kind",
+                  "format": "badge"
+                },
+                {
+                  "key": "key",
+                  "label": "Key"
+                },
+                {
+                  "key": "premium",
+                  "label": "Premium until",
+                  "format": "date"
+                },
+                {
+                  "key": "enabled",
+                  "label": "On",
+                  "format": "bool"
+                },
+                {
+                  "key": "health",
+                  "label": "Last test"
+                }
+              ],
+              "rowButtons": [
+                {
+                  "action": "account-test",
+                  "label": "Test"
+                },
+                {
+                  "action": "account-toggle",
+                  "label": "On / off"
+                },
+                {
+                  "action": "account-delete",
+                  "label": "Remove",
+                  "tone": "danger",
+                  "confirm": "Remove this account?"
+                }
+              ],
+              "add": {
+                "action": "account-add",
+                "label": "Add account",
+                "fields": [
+                  {
+                    "key": "provider",
+                    "type": "select",
+                    "label": "Provider",
+                    "options": [
+                      {
+                        "value": "realdebrid",
+                        "label": "Real-Debrid"
+                      },
+                      {
+                        "value": "alldebrid",
+                        "label": "AllDebrid"
+                      },
+                      {
+                        "value": "premiumize",
+                        "label": "Premiumize"
+                      },
+                      {
+                        "value": "torbox",
+                        "label": "TorBox (debrid + usenet)"
+                      },
+                      {
+                        "value": "easydebrid",
+                        "label": "EasyDebrid"
+                      },
+                      {
+                        "value": "debridlink",
+                        "label": "Debrid-Link"
+                      },
+                      {
+                        "value": "offcloud",
+                        "label": "Offcloud"
+                      },
+                      {
+                        "value": "putio",
+                        "label": "Put.io"
+                      },
+                      {
+                        "value": "nzbdav",
+                        "label": "NZBDav (self-hosted usenet)"
+                      },
+                      {
+                        "value": "altmount",
+                        "label": "AltMount (self-hosted usenet)"
+                      }
+                    ],
+                    "default": "realdebrid"
+                  },
+                  {
+                    "key": "api_key",
+                    "type": "secret",
+                    "label": "API key"
+                  },
+                  {
+                    "key": "host",
+                    "type": "url",
+                    "label": "Address (NZBDav / AltMount only)"
+                  },
+                  {
+                    "key": "priority",
+                    "type": "number",
+                    "label": "Order (lower first)",
+                    "default": 100,
+                    "min": 0
+                  }
+                ]
+              },
+              "empty": "No accounts yet — torrents need a debrid account to play."
+            },
+            {
+              "kind": "form",
+              "id": "usenet",
+              "title": "Built-in usenet",
+              "description": "Your usenet provider — Forge streams NZBs itself, no NZBDav needed. Leave the server empty to turn it off.",
+              "fields": [
+                "usenet_host",
+                "usenet_port",
+                "usenet_ssl",
+                "usenet_username",
+                "usenet_password",
+                "usenet_connections",
+                "usenet_stream_port"
+              ]
+            },
+            {
+              "kind": "buttons",
+              "id": "usenet-tools",
+              "buttons": [
+                {
+                  "action": "usenet-test",
+                  "label": "Test usenet login"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "preferences",
+          "label": "Stream preferences",
+          "icon": "sliders",
+          "group": "streaming",
+          "description": "Which releases show, in what order, and how their labels read.",
+          "sections": [
+            {
+              "kind": "form",
+              "id": "filters",
+              "title": "Filters",
+              "fields": [
+                "resolutions",
+                "codecs",
+                "hdr_allowed",
+                "size_min_mb",
+                "size_max_mb",
+                "languages",
+                "excluded_languages",
+                "min_seeders",
+                "exclude_uncached"
+              ]
+            },
+            {
+              "kind": "form",
+              "id": "order",
+              "title": "Order",
+              "fields": [
+                "sort_order"
+              ]
+            },
+            {
+              "kind": "form",
+              "id": "binge",
+              "title": "Binge watching",
+              "fields": [
+                "binge_pin_release_group",
+                "binge_pin_scope",
+                "binge_strict_release_group",
+                "binge_only_season_packs"
+              ]
+            },
+            {
+              "kind": "form",
+              "id": "labels",
+              "title": "Labels",
+              "fields": [
+                "formatter_preset",
+                "formatter_json"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "services": {
+      "provides": [
+        "debrid"
+      ]
+    }
   }
 }
