@@ -4357,10 +4357,10 @@ var init_base2 = __esm({
   }
 });
 
-// ../rewind_addon_sdk/src/manifest.ts
+// ../zero_addon_sdk/src/manifest.ts
 var SDK_PROTOCOL_VERSION = 2;
 
-// ../rewind_addon_sdk/src/addon.ts
+// ../zero_addon_sdk/src/addon.ts
 function defineAddon(def) {
   return {
     manifest: def.manifest,
@@ -4498,7 +4498,7 @@ var AllDebridResolver = class {
     for (let i = 0; i < hashes.length; i += BATCH) {
       const slice = hashes.slice(i, i + BATCH);
       const params = new URLSearchParams();
-      params.set("agent", "rewind");
+      params.set("agent", "zero");
       for (const c of slice) params.append("magnets[]", c.infoHash);
       const data = await fetchAuthed(
         `${AD_HOST}/magnet/instant?${params.toString()}`,
@@ -4516,7 +4516,7 @@ var AllDebridResolver = class {
   async resolve(candidate, signal, hint) {
     if (!this.apiKey || !candidate.infoHash) return null;
     const uploadBody = new URLSearchParams();
-    uploadBody.set("agent", "rewind");
+    uploadBody.set("agent", "zero");
     uploadBody.append("magnets[]", magnetFromHash(candidate.infoHash));
     const uploaded = await fetchAuthed(
       `${AD_HOST}/magnet/upload?apikey=${encodeURIComponent(this.apiKey)}`,
@@ -4695,7 +4695,7 @@ function pickCategory(hint, c) {
 }
 function sanitiseJobLabel(s) {
   const cleaned = s.replace(/[\u0000-\u001F\u007F]+/g, " ").replace(/[^\x20-\x7E]/g, "").replace(/[/\\]/g, "_").replace(/\s+/g, " ").trim().slice(0, 240);
-  return cleaned || "rewind-nzb";
+  return cleaned || "zero-nzb";
 }
 function basename(p) {
   const parts = p.replace(/\\/g, "/").split("/").filter(Boolean);
@@ -6440,7 +6440,7 @@ async function fetchNzb(url, signal) {
   try {
     res = await fetch(url, {
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2e4)]) : AbortSignal.timeout(2e4),
-      headers: { "User-Agent": "Rewind" }
+      headers: { "User-Agent": "Zero Media" }
     });
   } catch (err) {
     throw new Error(`NZB download failed (${describeFetchFailure(err)}) from ${redactUrl(url)}`);
@@ -6574,7 +6574,7 @@ async function readUsenetSettings(overrides) {
   };
 }
 var g = globalThis;
-var shared = g.__rewindForgeUsenet ??= { engine: null, server: null, open: null };
+var shared = g.__zeroForgeUsenet ??= { engine: null, server: null, open: null };
 var THIS_MODULE = /* @__PURE__ */ Symbol("forge-usenet");
 shared.open = async (jobId, idx) => {
   const e = shared.engine?.owner === THIS_MODULE ? shared.engine.engine : (await getUsenetEngine())?.engine;
@@ -6640,7 +6640,7 @@ async function testUsenetLogin(overrides) {
   }
 }
 function jobsDir() {
-  const base = hasForgeHost() && getForgeHost().dataDir || path3.join(os.tmpdir(), "rewind");
+  const base = hasForgeHost() && getForgeHost().dataDir || path3.join(os.tmpdir(), "zero");
   return path3.join(base, "addons", "forge", "usenet");
 }
 function positive(v) {
@@ -6834,7 +6834,7 @@ var COMET_SERVICE_BY_PROVIDER = {
   offcloud: "offcloud"
   // Putio + Pikpak are Comet-supported but we don't have parity resolvers,
   // so leave them out — passing them in would have Comet pre-restore on a
-  // service Rewind can't pick up.
+  // service Zero Media can't pick up.
 };
 var CometSource = class {
   constructor(row) {
@@ -8521,10 +8521,10 @@ init_host();
 
 // manifest.json
 var manifest_default = {
-  id: "rewind.forge",
+  id: "zero.forge",
   name: "Forge",
   version: "2.0.6",
-  description: "Torrent/usenet indexers + debrid resolution for Rewind. Brings the streams pipeline (Torrentio, Zilean, Torznab/Newznab, Comet, EasyNews, TorBox search) and the debrid/usenet resolvers, plus a built-in usenet streaming engine (your provider + indexer, no NZBDav needed). Installing reveals Forge tab and the debrid/usenet credentials.",
+  description: "Torrent/usenet indexers + debrid resolution for Zero Media. Brings the streams pipeline (Torrentio, Zilean, Torznab/Newznab, Comet, EasyNews, TorBox search) and the debrid/usenet resolvers, plus a built-in usenet streaming engine (your provider + indexer, no NZBDav needed). Installing reveals Forge tab and the debrid/usenet credentials.",
   resources: [
     "stream",
     "resolve"
@@ -8545,13 +8545,13 @@ var manifest_default = {
       "anime"
     ]
   },
-  rewind: {
+  zero: {
     kind: "forge",
     sdk: 2,
-    repo: "j4ckgrey/rewind_forge",
+    repo: "j4ckgrey/zero_forge",
     branch: "main",
     bundlePath: "dist/index.mjs",
-    bundleUrl: "https://raw.githubusercontent.com/j4ckgrey/rewind_forge/release/dist/index.mjs",
+    bundleUrl: "https://raw.githubusercontent.com/j4ckgrey/zero_forge/release/dist/index.mjs",
     tabs: [
       {
         id: "forge",
@@ -8566,7 +8566,7 @@ var manifest_default = {
         category: "Usenet",
         secret: false,
         placeholder: "news.provider.com",
-        description: "Your usenet provider's news server address. Fill these in and Rewind streams from your own provider \u2014 nothing else to set up.",
+        description: "Your usenet provider's news server address. Fill these in and Zero Media streams from your own provider \u2014 nothing else to set up.",
         card: "usenet"
       },
       {

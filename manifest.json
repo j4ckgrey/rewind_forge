@@ -1,8 +1,8 @@
 {
-  "id": "rewind.forge",
+  "id": "zero.forge",
   "name": "Forge",
   "version": "2.0.6",
-  "description": "Torrent/usenet indexers + debrid resolution for Rewind. Brings the streams pipeline (Torrentio, Zilean, Torznab/Newznab, Comet, EasyNews, TorBox search) and the debrid/usenet resolvers, plus a built-in usenet streaming engine (your provider + indexer, no NZBDav needed). Installing reveals Forge tab and the debrid/usenet credentials.",
+  "description": "Torrent/usenet indexers + debrid resolution for Zero Media. Brings the streams pipeline (Torrentio, Zilean, Torznab/Newznab, Comet, EasyNews, TorBox search) and the debrid/usenet resolvers, plus a built-in usenet streaming engine (your provider + indexer, no NZBDav needed). Installing reveals Forge tab and the debrid/usenet credentials.",
   "resources": [
     "stream",
     "resolve"
@@ -23,13 +23,13 @@
       "anime"
     ]
   },
-  "rewind": {
+  "zero": {
     "kind": "forge",
     "sdk": 2,
-    "repo": "j4ckgrey/rewind_forge",
+    "repo": "j4ckgrey/zero_forge",
     "branch": "main",
     "bundlePath": "dist/index.mjs",
-    "bundleUrl": "https://raw.githubusercontent.com/j4ckgrey/rewind_forge/release/dist/index.mjs",
+    "bundleUrl": "https://raw.githubusercontent.com/j4ckgrey/zero_forge/release/dist/index.mjs",
     "tabs": [
       {
         "id": "forge",
@@ -44,7 +44,7 @@
         "category": "Usenet",
         "secret": false,
         "placeholder": "news.provider.com",
-        "description": "Your usenet provider's news server address. Fill these in and Rewind streams from your own provider — nothing else to set up.",
+        "description": "Your usenet provider's news server address. Fill these in and Zero Media streams from your own provider — nothing else to set up.",
         "card": "usenet"
       },
       {
